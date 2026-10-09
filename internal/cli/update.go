@@ -11,7 +11,7 @@ import (
 )
 
 func RunUpdateCLI(currentVersion string, args []string) {
-	repo := "remnawave/node"
+	repo := updater.NodeRepository
 	channel := "release"
 	targetVersion := ""
 	autoConfirm := false

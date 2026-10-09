@@ -10,13 +10,21 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 )
+
+const NodeRepository = "aaaSaZaN/remnanode-go"
+
+const maxBinaryDownloadSize = 512 << 20
+
+var githubRepositoryPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 
 type ReleaseAsset struct {
 	Name               string `json:"name"`
@@ -44,13 +52,16 @@ type CheckResult struct {
 
 func FetchReleases(repo string) ([]ReleaseInfo, error) {
 	if repo == "" {
-		repo = "remnawave/node"
+		repo = NodeRepository
 	}
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=15", repo)
+	if !githubRepositoryPattern.MatchString(repo) {
+		return nil, fmt.Errorf("invalid GitHub repository %q", repo)
+	}
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=100", repo)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -100,6 +111,9 @@ func MatchAsset(assets []ReleaseAsset, targetOS, targetArch, binaryName string) 
 	for _, alias := range aliases {
 		for _, a := range assets {
 			lowerName := strings.ToLower(a.Name)
+			if isReleaseSidecar(lowerName) {
+				continue
+			}
 			if !strings.Contains(lowerName, strings.ToLower(targetOS)) {
 				continue
 			}
@@ -118,6 +132,9 @@ func MatchAsset(assets []ReleaseAsset, targetOS, targetArch, binaryName string) 
 	for _, alias := range aliases {
 		for _, a := range assets {
 			lowerName := strings.ToLower(a.Name)
+			if isReleaseSidecar(lowerName) {
+				continue
+			}
 			if targetArch == "mips" && (strings.Contains(lowerName, "le") || strings.Contains(lowerName, "el")) {
 				continue
 			}
@@ -133,17 +150,42 @@ func MatchAsset(assets []ReleaseAsset, targetOS, targetArch, binaryName string) 
 	return nil, fmt.Errorf("no matching asset found for %s/%s", targetOS, targetArch)
 }
 
+func isReleaseSidecar(name string) bool {
+	for _, suffix := range []string{".dgst", ".sha256", ".sha512", ".sha1", ".sig", ".asc", ".txt", ".json"} {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 func DownloadAndSaveBinary(downloadURL, targetBinaryName string) (string, error) {
+	parsedURL, err := url.ParseRequestURI(downloadURL)
+	if err != nil || parsedURL.Scheme != "https" || parsedURL.Host == "" || parsedURL.User != nil {
+		return "", fmt.Errorf("download URL must be a valid HTTPS URL")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", parsedURL.String(), nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", "Remnawave-Node-Updater")
 
-	client := &http.Client{Timeout: 3 * time.Minute}
+	client := &http.Client{
+		Timeout: 3 * time.Minute,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if req.URL.Scheme != "https" {
+				return fmt.Errorf("download redirect must use HTTPS")
+			}
+			if len(via) >= 10 {
+				return fmt.Errorf("too many download redirects")
+			}
+			return nil
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -153,13 +195,19 @@ func DownloadAndSaveBinary(downloadURL, targetBinaryName string) (string, error)
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download failed with status %d", resp.StatusCode)
 	}
+	if resp.ContentLength > maxBinaryDownloadSize {
+		return "", fmt.Errorf("download exceeds maximum size of %d bytes", maxBinaryDownloadSize)
+	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxBinaryDownloadSize+1))
 	if err != nil {
 		return "", err
 	}
+	if int64(len(bodyBytes)) > maxBinaryDownloadSize {
+		return "", fmt.Errorf("download exceeds maximum size of %d bytes", maxBinaryDownloadSize)
+	}
 
-	lowerURL := strings.ToLower(downloadURL)
+	lowerURL := strings.ToLower(parsedURL.Path)
 	tmpFile, err := os.CreateTemp("", targetBinaryName+"-*")
 	if err != nil {
 		return "", err
@@ -382,7 +430,6 @@ func GetCurrentArch() string {
 func GetCurrentOS() string {
 	return runtime.GOOS
 }
-
 
 func EnsureCore(targetPath string) (string, error) {
 	if targetPath != "" {

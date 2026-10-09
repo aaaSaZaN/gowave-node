@@ -154,8 +154,11 @@ systemctl status remnanode
 remnanode status
 # или
 remnanode-go status
+
+# Непосредственно запросить установленную версию ядра:
+/opt/remnanode/rw-core version
 ```
-Отображает статус активности демона, доступность unix-сокета, состояние службы systemd и версию подключенного -core.
+Первая команда показывает фактическую версию запущенного бинарника Xray Core. Вторая напрямую запрашивает версию установленного файла ядра.
 
 ### 2. Мониторинг логов -core
 ```bash
@@ -209,6 +212,9 @@ remnanode update -y
 
 # Обновление до pre-release:
 remnanode update --channel prerelease -y
+
+# Установка конкретной версии из Releases:
+remnanode update --version 1.0.5 -y
 ```
 
 ### 7. Версия и справка

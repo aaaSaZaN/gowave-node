@@ -205,7 +205,7 @@ func main() {
 		r.Get("/updates/check", func(w http.ResponseWriter, req *http.Request) {
 			repo := req.URL.Query().Get("repo")
 			if repo == "" {
-				repo = "remnawave/node"
+				repo = updater.NodeRepository
 			}
 			releases, err := updater.FetchReleases(repo)
 			if err != nil {
@@ -227,22 +227,6 @@ func main() {
 					latestRelease = &temp
 				}
 			}
-			if latestPrerelease == nil && len(releases) > 0 {
-				rcCandidate := updater.ReleaseInfo{
-					TagName:     "v3.5.0-rc.1",
-					Name:        "v3.5.0 Release Candidate 1",
-					Prerelease:  true,
-					PublishedAt: time.Now().UTC(),
-				}
-				betaCandidate := updater.ReleaseInfo{
-					TagName:     "v3.5.0-beta.1",
-					Name:        "v3.5.0 Beta 1",
-					Prerelease:  true,
-					PublishedAt: time.Now().UTC().Add(-24 * time.Hour),
-				}
-				latestPrerelease = &rcCandidate
-				releases = append([]updater.ReleaseInfo{rcCandidate, betaCandidate}, releases...)
-			}
 			coreVer, _ := processMgr.GetCoreVersion()
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"response": updater.CheckResult{
@@ -259,12 +243,20 @@ func main() {
 
 		r.Post("/updates/apply", func(w http.ResponseWriter, req *http.Request) {
 			var body struct {
-				Type    string `json:"type"`
-				Repo    string `json:"repo"`
-				Version string `json:"version"`
+				Type        string `json:"type"`
+				Repo        string `json:"repo"`
+				Version     string `json:"version"`
+				DownloadURL string `json:"downloadUrl"`
 			}
 			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid body"})
+				return
+			}
+			if body.Type == "" {
+				body.Type = "node"
+			}
+			if body.Type != "node" && body.Type != "core" {
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "type must be node or core"})
 				return
 			}
 
@@ -290,41 +282,71 @@ func main() {
 					repo = "XTLS/Xray-core"
 				}
 			} else if repo == "" {
-				repo = "remnawave/node"
+				repo = updater.NodeRepository
 			}
 
-			releases, err := updater.FetchReleases(repo)
-			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
-				return
-			}
-
-			var chosenRelease *updater.ReleaseInfo
-			for _, rel := range releases {
-				if strings.EqualFold(rel.TagName, body.Version) || strings.EqualFold(rel.TagName, "v"+body.Version) {
-					temp := rel
-					chosenRelease = &temp
-					break
+			var tmpPath string
+			version := ""
+			if body.Type == "core" && strings.TrimSpace(body.DownloadURL) != "" {
+				var err error
+				tmpPath, err = updater.DownloadAndSaveBinary(strings.TrimSpace(body.DownloadURL), targetBinary)
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+					return
 				}
-			}
-			if chosenRelease == nil && len(releases) > 0 {
-				chosenRelease = &releases[0]
-			}
-			if chosenRelease == nil {
-				writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "release not found"})
-				return
-			}
+				version = "custom URL"
+			} else {
+				releases, err := updater.FetchReleases(repo)
+				if err != nil {
+					writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+					return
+				}
 
-			asset, err := updater.MatchAsset(chosenRelease.Assets, updater.GetCurrentOS(), updater.GetCurrentArch(), targetBinary)
-			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
-				return
-			}
+				var chosenRelease *updater.ReleaseInfo
+				if body.Version != "" {
+					requestedVersion := strings.TrimPrefix(strings.TrimSpace(body.Version), "v")
+					for _, rel := range releases {
+						releaseVersion := strings.TrimPrefix(rel.TagName, "v")
+						if strings.EqualFold(releaseVersion, requestedVersion) {
+							temp := rel
+							chosenRelease = &temp
+							break
+						}
+					}
+					if chosenRelease == nil {
+						writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "requested release not found"})
+						return
+					}
+				} else {
+					for _, rel := range releases {
+						if !rel.Prerelease {
+							temp := rel
+							chosenRelease = &temp
+							break
+						}
+					}
+					if chosenRelease == nil && len(releases) > 0 {
+						temp := releases[0]
+						chosenRelease = &temp
+					}
+				}
+				if chosenRelease == nil {
+					writeJSON(w, http.StatusNotFound, map[string]interface{}{"error": "no releases found"})
+					return
+				}
 
-			tmpPath, err := updater.DownloadAndSaveBinary(asset.BrowserDownloadURL, targetBinary)
-			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
-				return
+				asset, err := updater.MatchAsset(chosenRelease.Assets, updater.GetCurrentOS(), updater.GetCurrentArch(), targetBinary)
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+					return
+				}
+
+				tmpPath, err = updater.DownloadAndSaveBinary(asset.BrowserDownloadURL, targetBinary)
+				if err != nil {
+					writeJSON(w, http.StatusBadGateway, map[string]interface{}{"error": err.Error()})
+					return
+				}
+				version = chosenRelease.TagName
 			}
 
 			if body.Type == "core" {
@@ -345,7 +367,7 @@ func main() {
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"response": map[string]interface{}{
 					"success": true,
-					"version": chosenRelease.TagName,
+					"version": version,
 				},
 			})
 		})
