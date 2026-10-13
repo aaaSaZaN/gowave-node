@@ -111,7 +111,7 @@ func MatchAsset(assets []ReleaseAsset, targetOS, targetArch, binaryName string) 
 	for _, alias := range aliases {
 		for _, a := range assets {
 			lowerName := strings.ToLower(a.Name)
-			if isReleaseSidecar(lowerName) {
+			if isReleaseSidecar(lowerName) || a.BrowserDownloadURL == "" {
 				continue
 			}
 			if !strings.Contains(lowerName, strings.ToLower(targetOS)) {
@@ -132,7 +132,7 @@ func MatchAsset(assets []ReleaseAsset, targetOS, targetArch, binaryName string) 
 	for _, alias := range aliases {
 		for _, a := range assets {
 			lowerName := strings.ToLower(a.Name)
-			if isReleaseSidecar(lowerName) {
+			if isReleaseSidecar(lowerName) || a.BrowserDownloadURL == "" {
 				continue
 			}
 			if targetArch == "mips" && (strings.Contains(lowerName, "le") || strings.Contains(lowerName, "el")) {

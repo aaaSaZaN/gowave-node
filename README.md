@@ -1,15 +1,19 @@
 # Remnanode (Go)
 
+[![Release](https://github.com/aaaSaZaN/remnanode-go/actions/workflows/release.yml/badge.svg)](https://github.com/aaaSaZaN/remnanode-go/actions/workflows/release.yml)
+[![GitHub release](https://img.shields.io/github/v/release/aaaSaZaN/remnanode-go?include_prereleases&style=flat-square)](https://github.com/aaaSaZaN/remnanode-go/releases)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL_3.0-blue.svg?style=flat-square)](LICENSE)
+
 Высокопроизводительный, легковесный Xray-core для панелей **Remnawave** и **Gowave**, написанный на **100% чистом Go**.
 
-Remnanode (Go) — это полноценная замена официальной Node.js-ноды. больше не нужны тяжелые Node.js и зависимости: один компактный бинарник потребляет всего **~10–15 МБ RAM** и готов работать даже на слабых VPS, микро-инстансах и роутерах.
+Remnanode (Go) — это полноценная замена официальной Node.js-ноды. Больше не нужны тяжелые Node.js и зависимости: один компактный бинарник потребляет всего **~10–15 МБ RAM** и готов работать даже на слабых VPS, микро-инстансах и роутерах.
 
 ---
 
 ## Ключевые преимущества
 
--  **Минимальное потребление памяти:** всего ~10–15 МБ RAM (против 50–150 МБ у оригинальной ноды на Node.js). * примерные данные , все зависит от вашего конфигурация Xray.
--  **Один статичный бинарник:**
+-  **Минимальное потребление памяти:** всего ~10–15 МБ RAM (против 50–150 МБ у оригинальной ноды на Node.js). * примерные данные, всё зависит от вашей конфигурации Xray.
+-  **Один статичный бинарник:** готов к работе сразу после скачивания, не требует Node.js и внешних зависимостей.
 -  **mTLS:** взаимная TLS-аутентификация с панелью через встроенный `SECRET_KEY`.
 -  **Защита и плагины:**
   - Встроенный сбор статистики и онлайна Xray-core.
@@ -27,8 +31,8 @@ Remnanode (Go) — это полноценная замена официальн
 
 ## Архитектура и совместимость
 
-- **Поддерживаемые панели:** [Gowave](https://github.com/aaaSaZaN/remnawave-go) и оригинальный [Remnawave?](https://github.com/remnawave).
-- **Ядро :** размещается рядом с бинарником ноды (`rw-core`, например в `/opt/remnanode/rw-core`).
+- **Поддерживаемые панели:** [Gowave](https://github.com/aaaSaZaN/remnawave-go) и оригинальный [Remnawave](https://github.com/remnawave).
+- **Ядро Xray:** размещается рядом с бинарником ноды (`rw-core`, например в `/opt/remnanode/rw-core`).
 - **Связь с панелью:** двусторонний шифрованный mTLS-канал по порту `3000` (или кастомному).
 
 ---
@@ -42,7 +46,7 @@ Remnanode (Go) — это полноценная замена официальн
 curl -sSL https://raw.githubusercontent.com/aaaSaZaN/remnanode-go/main/migrate.sh | bash
 ```
 
-Скрипт автоматически обнаружит контейнер с нодой, перенесет `SECRET_KEY`, сертификаты, порты и конфигурацию в `/opt/remnanode`, создаст systemd-службу `remnanode.service`, запустит бинарник и остановит Docker-контейнер с минимальным даунтаймом (~0 секунд).
+Скрипт автоматически обнаружит контейнер с нодой, перенесет `SECRET_KEY`, сертификаты, порты и конфигурацию в `/opt/remnanode`, создаст systemd-службу `remnanode.service`, запустит бинарник и остановит Docker-контейнер. Всё происходит с минимальным временем простоя (~0 секунд).
 
 ---
 
@@ -77,10 +81,16 @@ chmod +x remnanode
 
 #### Для MIPS / MIPSLE (роутеры OpenWrt, Keenetic и др.):
 ```bash
-# mipsle (Little Endian):
+# 32-bit mipsle (Little Endian):
 curl -L -o remnanode https://github.com/aaaSaZaN/remnanode-go/releases/latest/download/remnanode-linux-mipsle
-# mips (Big Endian):
+# 32-bit mips (Big Endian):
 curl -L -o remnanode https://github.com/aaaSaZaN/remnanode-go/releases/latest/download/remnanode-linux-mips
+
+# 64-bit mips64le (Little Endian):
+curl -L -o remnanode https://github.com/aaaSaZaN/remnanode-go/releases/latest/download/remnanode-linux-mips64le
+# 64-bit mips64 (Big Endian):
+curl -L -o remnanode https://github.com/aaaSaZaN/remnanode-go/releases/latest/download/remnanode-linux-mips64
+
 chmod +x remnanode
 ```
 
@@ -160,13 +170,13 @@ remnanode-go status
 ```
 Первая команда показывает фактическую версию запущенного бинарника Xray Core. Вторая напрямую запрашивает версию установленного файла ядра.
 
-### 2. Мониторинг логов -core
+### 2. Мониторинг логов Xray-core
 ```bash
 xlogs -f
 # или
 remnanode xlogs -n 100 -f
 ```
-Цветной вывод логов ядра  в реальном времени с подсветкой ошибок (красный), предупреждений (желтый) и подключений пользователей (зеленый/голубой).
+Цветной вывод логов ядра Xray в реальном времени с подсветкой ошибок (красный), предупреждений (желтый) и подключений пользователей (зеленый/голубой).
 - `-n <число>` — количество строк из истории (по умолчанию 100)
 - `-f` — режим отслеживания в реальном времени (follow)
 
@@ -189,7 +199,7 @@ remnanode restart
 
 ### 5. Управление ядром  (`rw-core`)
 ```bash
-# Скачать и установить  core:
+# Скачать и установить Xray core:
 remnanode core install
 
 # Установить конкретную версию:
@@ -237,7 +247,7 @@ remnanode help      # Справка по командам
 | `NFTABLES_ACCEPT_REPLY_TRAFFIC` | `false` | Разрешать ответный трафик для заблокированных адресов |
 | `SNI_VERIFICATION` | `false` | Дополнительная верификация SNI |
 | `INTERNAL_REST_TOKEN` | `remnanode-internal-secret` | Токен для внутренних локальных вызовов |
-| `XTLS_API_SOCKET_PATH` | `rw-api.sock` | Путь к Unix-сокету статистики -core |
+| `XTLS_API_SOCKET_PATH` | `rw-api.sock` | Путь к Unix-сокету статистики Xray-core |
 
 ---
 
@@ -249,14 +259,30 @@ remnanode help      # Справка по командам
 git clone https://github.com/aaaSaZaN/remnanode-go.git
 cd remnanode-go
 
-# Сборка под текущую ОС и архитектуру:
-go build -ldflags="-s -w" -o remnanode cmd/remnanode/main.go
+# Сборка под текущую ОС и архитектуру (с указанием версии):
+go build -ldflags="-s -w -X 'main.AppVersion=X.X.X'" -o remnanode cmd/remnanode/main.go
 
 # Кросс-компиляция под Linux amd64:
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o remnanode-linux-amd64 cmd/remnanode/main.go
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X 'main.AppVersion=1.0.6'" -o remnanode-linux-amd64 cmd/remnanode/main.go
 
 # Кросс-компиляция под Linux arm64:
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o remnanode-linux-arm64 cmd/remnanode/main.go
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X 'main.AppVersion=1.0.6'" -o remnanode-linux-arm64 cmd/remnanode/main.go
+
+
+# Linux armv7 (32-bit ARM):
+CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w -X 'main.AppVersion=1.0.6'" -o remnanode-linux-armv7 cmd/remnanode/main.go
+
+# Linux mipsle (softfloat, Keenetic/OpenWrt):
+CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -ldflags="-s -w -X 'main.AppVersion=1.0.6'" -o remnanode-linux-mipsle cmd/remnanode/main.go
+
+# Linux mips (softfloat):
+CGO_ENABLED=0 GOOS=linux GOARCH=mips GOMIPS=softfloat go build -ldflags="-s -w -X 'main.AppVersion=1.0.6'" -o remnanode-linux-mips cmd/remnanode/main.go
+
+# Linux mips64le:
+CGO_ENABLED=0 GOOS=linux GOARCH=mips64le go build -ldflags="-s -w -X 'main.AppVersion=1.0.6'" -o remnanode-linux-mips64le cmd/remnanode/main.go
+
+# Linux mips64:
+CGO_ENABLED=0 GOOS=linux GOARCH=mips64 go build -ldflags="-s -w -X 'main.AppVersion=1.0.6'" -o remnanode-linux-mips64 cmd/remnanode/main.go
 ```
 
 ---

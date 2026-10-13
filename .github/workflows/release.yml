@@ -1,0 +1,85 @@
+name: Release Remnanode
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.6)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: go.sum
+
+      - name: Build Multi-Arch Binaries
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          # Отрезаем ведущий "v", чтобы внутри бинарника была чистая версия (например, v1.0.6 -> 1.0.6)
+          VERSION="${TAG#v}"
+          echo "=== Building Remnanode for version: ${VERSION} (tag: ${TAG}) ==="
+
+          mkdir -p dist
+
+          LDFLAGS="-s -w -X 'main.AppVersion=${VERSION}'"
+
+          # 1. Linux amd64 (x86_64)
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/remnanode-linux-amd64 ./cmd/remnanode
+
+          # 2. Linux arm64 (aarch64)
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o dist/remnanode-linux-arm64 ./cmd/remnanode
+
+          # 3. Linux armv7 (32-bit ARM)
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="${LDFLAGS}" -o dist/remnanode-linux-armv7 ./cmd/remnanode
+
+          # 4. Linux mips (softfloat)
+          CGO_ENABLED=0 GOOS=linux GOARCH=mips GOMIPS=softfloat go build -ldflags="${LDFLAGS}" -o dist/remnanode-linux-mips ./cmd/remnanode
+
+          # 5. Linux mipsle (softfloat)
+          CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -ldflags="${LDFLAGS}" -o dist/remnanode-linux-mipsle ./cmd/remnanode
+
+          # 6. Linux mips64
+          CGO_ENABLED=0 GOOS=linux GOARCH=mips64 go build -ldflags="${LDFLAGS}" -o dist/remnanode-linux-mips64 ./cmd/remnanode
+
+          # 7. Linux mips64le
+          CGO_ENABLED=0 GOOS=linux GOARCH=mips64le go build -ldflags="${LDFLAGS}" -o dist/remnanode-linux-mips64le ./cmd/remnanode
+
+      - name: Generate Checksums
+        working-directory: ./dist
+        run: |
+          sha256sum remnanode-* > sha256sums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/remnanode-linux-amd64
+            dist/remnanode-linux-arm64
+            dist/remnanode-linux-armv7
+            dist/remnanode-linux-mips
+            dist/remnanode-linux-mipsle
+            dist/remnanode-linux-mips64
+            dist/remnanode-linux-mips64le
+            dist/sha256sums.txt
+          generate_release_notes: true
