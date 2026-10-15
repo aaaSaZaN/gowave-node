@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 
 type ReleaseAsset struct {
 	Name               string `json:"name"`
+	Digest             string `json:"digest"`
 	BrowserDownloadURL string `json:"browser_download_url"`
 	Size               int64  `json:"size"`
 }
@@ -44,7 +46,10 @@ type CheckResult struct {
 
 func FetchReleases(repo string) ([]ReleaseInfo, error) {
 	if repo == "" {
-		repo = "remnawave/node"
+		repo = NodeRepository
+	}
+	if !regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`).MatchString(repo) {
+		return nil, fmt.Errorf("invalid repository")
 	}
 	url := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=15", repo)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -81,112 +86,68 @@ func FetchReleases(repo string) ([]ReleaseInfo, error) {
 }
 
 func MatchAsset(assets []ReleaseAsset, targetOS, targetArch, binaryName string) (*ReleaseAsset, error) {
-	archAliases := map[string][]string{
-		"amd64":    {"amd64", "x86_64", "linux-64", "64bit"},
-		"arm64":    {"arm64-v8a", "arm64v8", "arm64", "aarch64"},
-		"arm":      {"arm32-v7a", "armv7", "arm32-v6", "armv6", "armhf", "arm"},
-		"mipsle":   {"mips32le", "mipsle", "mipsel"},
-		"mips":     {"mips32", "mips"},
-		"mips64le": {"mips64le"},
-		"mips64":   {"mips64"},
-		"386":      {"linux-32", "386", "i386", "32bit", "x86"},
+	names := []string{}
+	if binaryName == "remnanode" {
+		arch := targetArch
+		if arch == "arm" {
+			arch = "armv7"
+		}
+		names = []string{"remnanode-" + targetOS + "-" + arch, "remnanode-" + targetOS + "-" + arch + ".tar.gz", "remnanode-" + targetOS + "-" + arch + ".zip"}
 	}
-
-	aliases := archAliases[targetArch]
-	if len(aliases) == 0 {
-		aliases = []string{targetArch}
+	if binaryName == "rw-core" && targetOS == "linux" {
+		arch := map[string]string{"amd64": "64", "386": "32", "arm": "arm32-v7a", "arm64": "arm64-v8a", "mips": "mips32", "mipsle": "mips32le", "mips64": "mips64", "mips64le": "mips64le"}[targetArch]
+		if arch != "" {
+			names = []string{"Xray-linux-" + arch + ".zip"}
+		}
 	}
-
-	for _, alias := range aliases {
-		for _, a := range assets {
-			lowerName := strings.ToLower(a.Name)
-			if !strings.Contains(lowerName, strings.ToLower(targetOS)) {
-				continue
-			}
-			if targetArch == "mips" && (strings.Contains(lowerName, "le") || strings.Contains(lowerName, "el")) {
-				continue
-			}
-			if targetArch == "mips64" && (strings.Contains(lowerName, "le") || strings.Contains(lowerName, "el")) {
-				continue
-			}
-			if strings.Contains(lowerName, alias) {
+	if binaryName == "geocheck" {
+		names = []string{"geocheck_" + targetOS + "_" + targetArch + ".tar.gz"}
+	}
+	for _, name := range names {
+		for _, asset := range assets {
+			if asset.Name == name {
+				a := asset
 				return &a, nil
 			}
 		}
 	}
-
-	for _, alias := range aliases {
-		for _, a := range assets {
-			lowerName := strings.ToLower(a.Name)
-			if targetArch == "mips" && (strings.Contains(lowerName, "le") || strings.Contains(lowerName, "el")) {
-				continue
-			}
-			if targetArch == "mips64" && (strings.Contains(lowerName, "le") || strings.Contains(lowerName, "el")) {
-				continue
-			}
-			if strings.Contains(lowerName, alias) {
-				return &a, nil
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("no matching asset found for %s/%s", targetOS, targetArch)
+	return nil, fmt.Errorf("no matching %s asset for %s/%s", binaryName, targetOS, targetArch)
 }
 
 func DownloadAndSaveBinary(downloadURL, targetBinaryName string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
+	data, err := fetchBytes(ctx, downloadURL, MaxArtifactSize)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "Remnawave-Node-Updater")
-
-	client := &http.Client{Timeout: 3 * time.Minute}
-	resp, err := client.Do(req)
+	return saveBinary(data, downloadURL, targetBinaryName)
+}
+func saveBinary(data []byte, source, name string) (string, error) {
+	f, err := os.CreateTemp("", name+"-*")
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download failed with status %d", resp.StatusCode)
+	path := f.Name()
+	f.Close()
+	lower := strings.ToLower(source)
+	if strings.HasSuffix(lower, ".zip") {
+		os.Remove(path)
+		return extractZip(data, name, path)
 	}
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
+	if strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz") {
+		os.Remove(path)
+		return extractTarGz(data, name, path)
+	}
+	if err = os.WriteFile(path, data, 0700); err != nil {
+		os.Remove(path)
 		return "", err
 	}
-
-	lowerURL := strings.ToLower(downloadURL)
-	tmpFile, err := os.CreateTemp("", targetBinaryName+"-*")
-	if err != nil {
+	if err = os.Chmod(path, 0700); err != nil {
+		os.Remove(path)
 		return "", err
 	}
-	tmpPath := tmpFile.Name()
-
-	if strings.HasSuffix(lowerURL, ".zip") {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
-		return extractZip(bodyBytes, targetBinaryName, tmpPath)
-	} else if strings.HasSuffix(lowerURL, ".tar.gz") || strings.HasSuffix(lowerURL, ".tgz") {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
-		return extractTarGz(bodyBytes, targetBinaryName, tmpPath)
-	}
-
-	if _, err := tmpFile.Write(bodyBytes); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
-		return "", err
-	}
-	_ = tmpFile.Close()
-	if err := os.Chmod(tmpPath, 0755); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", err
-	}
-	return tmpPath, nil
+	return path, nil
 }
 
 func GetStandardAssetDirs(extraDirs ...string) []string {
@@ -237,142 +198,117 @@ func extractZip(data []byte, binaryName, destPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
-	destDir := filepath.Dir(destPath)
-	foundBinary := false
-
 	for _, f := range zr.File {
 		base := filepath.Base(f.Name)
-		if base == binaryName || strings.EqualFold(base, binaryName) || strings.EqualFold(base, binaryName+".exe") || (binaryName == "rw-core" && strings.EqualFold(base, "xray")) {
-			rc, err := f.Open()
-			if err != nil {
-				return "", err
-			}
-			out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
-			if err != nil {
-				_ = rc.Close()
-				return "", err
-			}
-			_, err = io.Copy(out, rc)
-			_ = out.Close()
-			_ = rc.Close()
-			if err != nil {
-				return "", err
-			}
-			foundBinary = true
-		} else if strings.EqualFold(base, "geoip.dat") || strings.EqualFold(base, "geosite.dat") {
-			fileName := strings.ToLower(base)
-			rc, err := f.Open()
-			if err == nil {
-				content, readErr := io.ReadAll(rc)
-				_ = rc.Close()
-				if readErr == nil && len(content) > 1024 {
-					_ = os.WriteFile(filepath.Join(destDir, fileName), content, 0644)
-					for _, d := range GetStandardAssetDirs(destDir) {
-						_ = os.MkdirAll(d, 0755)
-						_ = os.WriteFile(filepath.Join(d, fileName), content, 0644)
-					}
-				}
-			}
+		if base != binaryName && !(binaryName == "rw-core" && base == "xray") {
+			continue
 		}
+		if f.UncompressedSize64 > uint64(MaxArtifactSize) {
+			return "", fmt.Errorf("archive executable too large")
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return "", err
+		}
+		defer rc.Close()
+		return extractExecutable(rc, destPath)
 	}
-	if foundBinary {
-		return destPath, nil
-	}
-	return "", fmt.Errorf("binary %s not found in zip archive", binaryName)
+	return "", fmt.Errorf("binary %s not found in zip", binaryName)
 }
-
 func extractTarGz(data []byte, binaryName, destPath string) (string, error) {
-	gr, err := gzip.NewReader(bytes.NewReader(data))
+	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return "", err
 	}
-	defer gr.Close()
-
-	destDir := filepath.Dir(destPath)
-	tr := tar.NewReader(gr)
+	defer gz.Close()
+	tr := tar.NewReader(gz)
 	for {
-		hdr, err := tr.Next()
+		header, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return "", err
 		}
-		base := filepath.Base(hdr.Name)
-		if base == binaryName || strings.EqualFold(base, binaryName) || (binaryName == "rw-core" && strings.EqualFold(base, "xray")) {
-			out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
-			if err != nil {
-				return "", err
+		base := filepath.Base(header.Name)
+		if header.Typeflag != tar.TypeReg {
+			continue
+		}
+		if base == binaryName || (binaryName == "rw-core" && base == "xray") {
+			if header.Size > MaxArtifactSize {
+				return "", fmt.Errorf("archive executable too large")
 			}
-			_, err = io.Copy(out, tr)
-			_ = out.Close()
-			if err != nil {
-				return "", err
-			}
-			return destPath, nil
-		} else if strings.EqualFold(base, "geoip.dat") || strings.EqualFold(base, "geosite.dat") {
-			fileName := strings.ToLower(base)
-			content, readErr := io.ReadAll(tr)
-			if readErr == nil && len(content) > 1024 {
-				_ = os.WriteFile(filepath.Join(destDir, fileName), content, 0644)
-				for _, d := range GetStandardAssetDirs(destDir) {
-					_ = os.MkdirAll(d, 0755)
-					_ = os.WriteFile(filepath.Join(d, fileName), content, 0644)
-				}
-			}
+			return extractExecutable(tr, destPath)
 		}
 	}
-	return "", fmt.Errorf("binary %s not found in tar.gz archive", binaryName)
+	return "", fmt.Errorf("binary %s not found in archive", binaryName)
+}
+func extractExecutable(r io.Reader, dest string) (string, error) {
+	f, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0700)
+	if err != nil {
+		return "", err
+	}
+	size, err := io.Copy(f, io.LimitReader(r, MaxArtifactSize+1))
+	closeErr := f.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if size == 0 || size > MaxArtifactSize {
+		err = fmt.Errorf("empty or oversized executable")
+	}
+	if err != nil {
+		os.Remove(dest)
+		return "", err
+	}
+	return dest, nil
 }
 
 func AtomicReplace(tmpBinaryPath, targetPath string) error {
-	dir := filepath.Dir(targetPath)
-	sameDirTmp := filepath.Join(dir, "."+filepath.Base(targetPath)+".new")
-	_ = os.Remove(sameDirTmp)
-
 	in, err := os.Open(tmpBinaryPath)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-
-	out, err := os.OpenFile(sameDirTmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	f, err := os.CreateTemp(filepath.Dir(targetPath), ".update-*")
 	if err != nil {
 		return err
 	}
-	_, err = io.Copy(out, in)
-	_ = out.Close()
+	defer os.Remove(f.Name())
+	_, err = io.Copy(f, in)
+	if err == nil {
+		err = f.Chmod(0755)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err == nil {
+		err = closeErr
+	}
 	if err != nil {
-		_ = os.Remove(sameDirTmp)
 		return err
 	}
-
-	_ = os.Chmod(sameDirTmp, 0755)
-	if err := os.Rename(sameDirTmp, targetPath); err != nil {
-		_ = os.Remove(sameDirTmp)
+	if err = os.Rename(f.Name(), targetPath); err != nil {
 		return err
 	}
 	_ = os.Remove(tmpBinaryPath)
 	return nil
 }
-
-func ValidateCoreBinary(corePath string) error {
+func binaryOutput(path string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, corePath, "version")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("core validation failed: %w (output: %s)", err, string(out))
-	}
-	return nil
+	return exec.CommandContext(ctx, path, args...).CombinedOutput()
 }
 
-func RestartNodeProcess() {
-	go func() {
-		time.Sleep(1 * time.Second)
-		_ = exec.Command("systemctl", "restart", "remnanode").Run()
-	}()
+func ValidateCoreBinary(corePath string) error {
+	out, err := binaryOutput(corePath, "version")
+	if err != nil {
+		return fmt.Errorf("core validation: %w", err)
+	}
+	if !strings.HasPrefix(string(out), "Xray ") {
+		return fmt.Errorf("download is not an Xray core")
+	}
+	return nil
 }
 
 func GetCurrentArch() string {
@@ -383,36 +319,24 @@ func GetCurrentOS() string {
 	return runtime.GOOS
 }
 
-
 func EnsureCore(targetPath string) (string, error) {
 	if targetPath != "" {
 		if fi, err := os.Stat(targetPath); err == nil && !fi.IsDir() {
-			_ = EnsureGeodata(filepath.Dir(targetPath), "/opt/remnanode", "/usr/local/share/xray")
+			if err := EnsureGeodata(filepath.Dir(targetPath)); err != nil {
+				return "", err
+			}
 			return targetPath, nil
 		}
 	}
 
-	repo := "XTLS/Xray-core"
+	repo := CoreRepository
 	fmt.Printf("[CORE] Xray core not found. Automatically downloading latest release from %s...\n", repo)
 
-	releases, err := FetchReleases(repo)
+	release, err := FetchRelease(repo, "latest")
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch releases: %w", err)
+		return "", fmt.Errorf("failed to fetch latest stable core: %w", err)
 	}
-	if len(releases) == 0 {
-		return "", fmt.Errorf("no releases found for %s", repo)
-	}
-
-	var latest *ReleaseInfo
-	for _, r := range releases {
-		if !r.Prerelease {
-			latest = &r
-			break
-		}
-	}
-	if latest == nil {
-		latest = &releases[0]
-	}
+	latest := &release
 
 	asset, err := MatchAsset(latest.Assets, GetCurrentOS(), GetCurrentArch(), "rw-core")
 	if err != nil {
@@ -420,7 +344,7 @@ func EnsureCore(targetPath string) (string, error) {
 	}
 
 	fmt.Printf("[CORE] Downloading %s (%s)...\n", asset.Name, latest.TagName)
-	tmpPath, err := DownloadAndSaveBinary(asset.BrowserDownloadURL, "rw-core")
+	tmpPath, err := DownloadReleaseBinary(*latest, *asset, "rw-core")
 	if err != nil {
 		return "", fmt.Errorf("download failed: %w", err)
 	}
@@ -444,68 +368,71 @@ func EnsureCore(targetPath string) (string, error) {
 		return "", fmt.Errorf("failed to install core to %s: %w", targetPath, err)
 	}
 
-	_ = EnsureGeodata(filepath.Dir(targetPath), "/opt/remnanode", "/usr/local/share/xray")
+	if err := EnsureGeodata(filepath.Dir(targetPath)); err != nil {
+		return "", err
+	}
 
 	fmt.Printf("[CORE] Successfully installed Xray core to %s!\n", targetPath)
 	return targetPath, nil
 }
 
 func EnsureGeodata(targetDirs ...string) error {
-	requiredFiles := []string{"geoip.dat", "geosite.dat"}
-	allDirs := GetStandardAssetDirs(targetDirs...)
-
-	for _, reqFile := range requiredFiles {
-		var foundPath string
-		searchList := append([]string{"/tmp"}, allDirs...)
-		for _, dir := range searchList {
-			candidate := filepath.Join(dir, reqFile)
-			if fi, err := os.Stat(candidate); err == nil && fi.Size() > 1024 {
-				foundPath = candidate
-				break
-			}
-		}
-
-		if foundPath != "" {
-			for _, dir := range allDirs {
-				target := filepath.Join(dir, reqFile)
-				if target != foundPath {
-					if fi, err := os.Stat(target); err != nil || fi.Size() == 0 {
-						_ = CopyFile(foundPath, target)
-					}
-				}
-			}
+	dir := "/usr/local/share/xray"
+	if len(targetDirs) > 0 && targetDirs[0] != "" {
+		dir = targetDirs[0]
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	for _, name := range []string{"geoip.dat", "geosite.dat"} {
+		target := filepath.Join(dir, name)
+		if fi, err := os.Stat(target); err == nil && fi.Mode().IsRegular() && fi.Size() > 1024 {
 			continue
 		}
-
-		downloadURLs := []string{}
-		if reqFile == "geoip.dat" {
-			downloadURLs = []string{
-				"https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat",
-				"https://github.com/v2fly/geoip/releases/latest/download/geoip.dat",
+		copied := false
+		for _, trusted := range GetStandardAssetDirs() {
+			candidate := filepath.Join(trusted, name)
+			if candidate == target {
+				continue
 			}
-		} else {
-			downloadURLs = []string{
-				"https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
-				"https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat",
-			}
-		}
-
-		fmt.Printf("[CORE] Geodata asset %s missing. Downloading from CDN...\n", reqFile)
-		downloaded := false
-		for _, u := range downloadURLs {
-			data, err := downloadFileBytes(u)
-			if err == nil && len(data) > 1024 {
-				for _, dir := range allDirs {
-					_ = os.MkdirAll(dir, 0755)
-					_ = os.WriteFile(filepath.Join(dir, reqFile), data, 0644)
+			if fi, err := os.Stat(candidate); err == nil && fi.Mode().IsRegular() && fi.Size() > 1024 {
+				if err := CopyFile(candidate, target); err != nil {
+					return err
 				}
-				fmt.Printf("[CORE] Successfully installed %s (%d bytes).\n", reqFile, len(data))
-				downloaded = true
+				copied = true
 				break
 			}
 		}
-		if !downloaded {
-			fmt.Printf("[CORE] Warning: Failed to download %s from all sources.\n", reqFile)
+		if copied {
+			continue
+		}
+		raw := "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/" + name
+		data, err := downloadFileBytes(raw)
+		if err != nil {
+			return fmt.Errorf("prepare %s: %w", name, err)
+		}
+		if len(data) <= 1024 {
+			return fmt.Errorf("invalid geodata %s", name)
+		}
+		f, err := os.CreateTemp(dir, ".geodata-*")
+		if err != nil {
+			return err
+		}
+		tmp := f.Name()
+		_, err = f.Write(data)
+		closeErr := f.Close()
+		if err == nil {
+			err = closeErr
+		}
+		if err == nil {
+			err = os.Chmod(tmp, 0644)
+		}
+		if err == nil {
+			err = os.Rename(tmp, target)
+		}
+		os.Remove(tmp)
+		if err != nil {
+			return err
 		}
 	}
 	return nil
@@ -514,19 +441,5 @@ func EnsureGeodata(targetDirs ...string) error {
 func downloadFileBytes(url string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "Remnanode-Geodata-Downloader")
-	client := &http.Client{Timeout: 2 * time.Minute}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	return io.ReadAll(resp.Body)
+	return fetchBytes(ctx, url, MaxArtifactSize)
 }

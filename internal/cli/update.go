@@ -7,11 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/remnawave/node-go/internal/config"
 	"github.com/remnawave/node-go/internal/updater"
+	"github.com/remnawave/node-go/internal/xray"
 )
 
 func RunUpdateCLI(currentVersion string, args []string) {
-	repo := "remnawave/node"
+	repo := updater.NodeRepository
 	channel := "release"
 	targetVersion := ""
 	autoConfirm := false
@@ -47,18 +49,18 @@ func RunUpdateCLI(currentVersion string, args []string) {
 	var chosenRelease *updater.ReleaseInfo
 
 	if targetVersion != "" {
-		for _, r := range releases {
-			if strings.EqualFold(r.TagName, targetVersion) || strings.EqualFold(r.TagName, "v"+targetVersion) {
-				chosenRelease = &r
-				break
-			}
-		}
-		if chosenRelease == nil {
-			fmt.Fprintf(os.Stderr, "%s[ERROR]%s Version %s not found in releases.\n", colorRed, colorReset, targetVersion)
+		exact, err := updater.FetchRelease(repo, targetVersion)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+		chosenRelease = &exact
 	} else if !autoConfirm {
 		fmt.Printf("\nCurrent version: %s%s%s (arch: %s/%s)\n\n", colorGreen, currentVersion, colorReset, updater.GetCurrentOS(), updater.GetCurrentArch())
+		if len(releases) == 0 {
+			fmt.Fprintln(os.Stderr, "No releases found")
+			os.Exit(1)
+		}
 		fmt.Println("Available releases:")
 		var filtered []updater.ReleaseInfo
 		for i, r := range releases {
@@ -90,15 +92,25 @@ func RunUpdateCLI(currentVersion string, args []string) {
 		}
 		chosenRelease = &filtered[idx]
 	} else {
-		for _, r := range releases {
-			if channel == "prerelease" || !r.Prerelease {
-				chosenRelease = &r
-				break
+		if channel == "prerelease" {
+			for _, r := range releases {
+				if r.Prerelease {
+					chosenRelease = &r
+					break
+				}
 			}
+		} else if channel == "release" {
+			exact, err := updater.FetchRelease(repo, "latest")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			chosenRelease = &exact
+		} else {
+			fmt.Fprintln(os.Stderr, "channel must be release or prerelease")
+			os.Exit(1)
 		}
-		if chosenRelease == nil && len(releases) > 0 {
-			chosenRelease = &releases[0]
-		}
+
 	}
 
 	if chosenRelease == nil {
@@ -127,7 +139,7 @@ func RunUpdateCLI(currentVersion string, args []string) {
 	}
 
 	fmt.Printf("Downloading %s (%.1f MB)...\n", asset.Name, float64(asset.Size)/(1024*1024))
-	tmpPath, err := updater.DownloadAndSaveBinary(asset.BrowserDownloadURL, "remnanode")
+	tmpPath, err := updater.DownloadReleaseBinary(*chosenRelease, *asset, "remnanode")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s[ERROR]%s Download failed: %v\n", colorRed, colorReset, err)
 		os.Exit(1)
@@ -140,6 +152,21 @@ func RunUpdateCLI(currentVersion string, args []string) {
 	selfPath, _ = filepath.EvalSymlinks(selfPath)
 
 	fmt.Printf("Applying update to %s...\n", selfPath)
+	if err := updater.ValidateNodeBinary(tmpPath); err != nil {
+		os.Remove(tmpPath)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	unlock, err := updater.LockTarget(selfPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer unlock()
+	if err := updater.Backup(selfPath, ".previous"); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	if err := updater.AtomicReplace(tmpPath, selfPath); err != nil {
 		fmt.Fprintf(os.Stderr, "%s[ERROR]%s Failed to replace binary: %v\n", colorRed, colorReset, err)
 		os.Exit(1)
@@ -147,7 +174,11 @@ func RunUpdateCLI(currentVersion string, args []string) {
 
 	fmt.Printf("%s[SUCCESS]%s Remnanode updated to %s!\n", colorGreen, colorReset, chosenRelease.TagName)
 	fmt.Println("Restarting service...")
-	updater.RestartNodeProcess()
+	d, _ := config.ReadDiscovery()
+	if err := CompleteUpdate(selfPath, Ready(true), d.PID); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }
 
 func RunCoreCLI(args []string) {
@@ -161,7 +192,15 @@ func RunCoreCLI(args []string) {
 
 	sub := args[0]
 	if sub == "reset" {
-		fmt.Println("Resetting core configuration to default...")
+		path := xray.FindCorePath(false)
+		if err := updater.ResetCore(path); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if err := updater.RestartNodeProcess(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -196,13 +235,17 @@ func RunCoreCLI(args []string) {
 
 	var chosenRelease *updater.ReleaseInfo
 	if targetVersion != "" {
-		for _, r := range releases {
-			if strings.EqualFold(r.TagName, targetVersion) || strings.EqualFold(r.TagName, "v"+targetVersion) {
-				chosenRelease = &r
-				break
-			}
+		exact, err := updater.FetchRelease(repo, targetVersion)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
 		}
+		chosenRelease = &exact
 	} else if !autoConfirm {
+		if len(releases) == 0 {
+			fmt.Fprintln(os.Stderr, "No releases found")
+			os.Exit(1)
+		}
 		fmt.Println("Available releases:")
 		var filtered []updater.ReleaseInfo
 		for i, r := range releases {
@@ -229,15 +272,13 @@ func RunCoreCLI(args []string) {
 		}
 		chosenRelease = &filtered[idx]
 	} else {
-		for _, r := range releases {
-			if !r.Prerelease {
-				chosenRelease = &r
-				break
-			}
+		exact, err := updater.FetchRelease(repo, "latest")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
 		}
-		if chosenRelease == nil && len(releases) > 0 {
-			chosenRelease = &releases[0]
-		}
+		chosenRelease = &exact
+
 	}
 
 	if chosenRelease == nil {
@@ -266,7 +307,7 @@ func RunCoreCLI(args []string) {
 	}
 
 	fmt.Printf("Downloading %s (%.1f MB)...\n", asset.Name, float64(asset.Size)/(1024*1024))
-	tmpPath, err := updater.DownloadAndSaveBinary(asset.BrowserDownloadURL, "rw-core")
+	tmpPath, err := updater.DownloadReleaseBinary(*chosenRelease, *asset, "rw-core")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s[ERROR]%s Download failed: %v\n", colorRed, colorReset, err)
 		os.Exit(1)
@@ -279,18 +320,42 @@ func RunCoreCLI(args []string) {
 		os.Exit(1)
 	}
 
-	targetCorePath := "./rw-core"
-	if exe, err := os.Executable(); err == nil {
+	targetCorePath := xray.FindCorePath(false)
+	if targetCorePath == "" {
+		exe, _ := os.Executable()
 		targetCorePath = filepath.Join(filepath.Dir(exe), "rw-core")
 	}
 	fmt.Printf("Applying core update to %s...\n", targetCorePath)
-	if err := updater.AtomicReplace(tmpPath, targetCorePath); err != nil {
+	unlock, err := updater.LockTarget(targetCorePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer unlock()
+	if err := updater.InstallStockCore(tmpPath, targetCorePath); err != nil {
 		fmt.Fprintf(os.Stderr, "%s[ERROR]%s Failed to replace core: %v\n", colorRed, colorReset, err)
 		os.Exit(1)
 	}
-	_ = updater.EnsureGeodata(filepath.Dir(targetCorePath), "/opt/remnanode", "/usr/local/share/xray")
+	assetDir := os.Getenv("XRAY_LOCATION_ASSET")
+	if assetDir == "" {
+		assetDir = filepath.Dir(targetCorePath)
+	}
+	if err := updater.EnsureGeodata(assetDir); err != nil {
+		_ = updater.Rollback(targetCorePath)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	fmt.Printf("%s[SUCCESS]%s Core updated to %s!\n", colorGreen, colorReset, chosenRelease.TagName)
 	fmt.Println("Restarting remnanode to reload core...")
-	updater.RestartNodeProcess()
+	d, _ := config.ReadDiscovery()
+	if d.PID == 0 {
+		updater.CommitUpdate(targetCorePath)
+	}
+	if d.PID != 0 {
+		if err := CompleteUpdate(targetCorePath, Ready(true), d.PID); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
 }
