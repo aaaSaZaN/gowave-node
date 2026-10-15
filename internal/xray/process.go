@@ -160,47 +160,52 @@ func assetDirectory(core string) string {
 	}
 	return filepath.Dir(core)
 }
+
+// Prepare is called with the controller's state.Operation gate held.
 func (p *ProcessManager) Prepare(ctx context.Context, geodata interface{}) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	candidate, err := updater.PrepareCore(ctx, p.execPath, geodata)
+	execPath, assetDir, pendingCore := p.execPath, p.assetDir, p.pendingCore
+	p.mu.Unlock()
+	candidate, err := updater.PrepareCore(ctx, execPath, geodata)
 	if err != nil {
 		return err
 	}
-	if p.pendingCore != "" && p.pendingCore != p.execPath && p.pendingCore != p.execPath+".stock" {
-		os.Remove(p.pendingCore)
+	if pendingCore != "" && pendingCore != execPath && pendingCore != execPath+".stock" {
+		os.Remove(pendingCore)
 	}
-	p.pendingCore = candidate
-	p.pendingCustom = false
+	pendingCustom := false
 	if cfg, ok := geodata.(map[string]interface{}); ok {
-		p.pendingCustom = cfg["core"] != nil
+		pendingCustom = cfg["core"] != nil
 	}
-	return updater.PrepareAssets(ctx, p.assetDir, geodata)
+	p.mu.Lock()
+	p.pendingCore = candidate
+	p.pendingCustom = pendingCustom
+	p.mu.Unlock()
+	return updater.PrepareAssets(ctx, assetDir, geodata)
 }
-func (p *ProcessManager) command(ctx context.Context, args ...string) *exec.Cmd {
-	path := p.execPath
+
+// ValidateConfig is called with the controller's state.Operation gate held.
+func (p *ProcessManager) ValidateConfig(ctx context.Context, cfg map[string]interface{}) error {
+	p.mu.Lock()
+	path, assetDir, configPath := p.execPath, p.assetDir, p.configPath
 	if p.pendingCore != "" {
 		path = p.pendingCore
 	}
-	cmd := exec.CommandContext(ctx, path, args...)
-	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+p.assetDir, "xray.location.asset="+p.assetDir)
-	return cmd
-}
-func (p *ProcessManager) ValidateConfig(ctx context.Context, cfg map[string]interface{}) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.mu.Unlock()
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return err
 	}
-	stage := p.configPath + ".validate"
+	stage := configPath + ".validate"
 	if err = config.WritePrivate(stage, data); err != nil {
 		return err
 	}
 	defer os.Remove(stage)
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	out, err := p.command(ctx, "run", "-test", "-format", "json", "-config", stage).CombinedOutput()
+	cmd := exec.CommandContext(ctx, path, "run", "-test", "-format", "json", "-config", stage)
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+assetDir, "xray.location.asset="+assetDir)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("invalid Xray configuration: %w: %s", err, out)
 	}

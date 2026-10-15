@@ -63,7 +63,8 @@ func CompleteUpdate(target string, core bool, oldPID int) error {
 	time.Sleep(updateDelay)
 	err := restartNode()
 	if err == nil {
-		err = waitForReady(core, 120*time.Second, oldPID)
+		// Xray configuration arrives from the panel after the node restarts.
+		err = waitForReady(false, 120*time.Second, oldPID)
 	}
 	if err != nil {
 		rollbackErr := updater.Rollback(target)

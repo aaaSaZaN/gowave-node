@@ -50,14 +50,19 @@ func main() {
 			cli.RunLogsCLI("node", os.Args[2:])
 			return
 		case "_finish-update":
-			if exe, err := os.Executable(); err == nil && strings.HasPrefix(filepath.Base(exe), ".update-monitor-") {
-				defer os.Remove(exe)
+			cleanup := func() {
+				if exe, err := os.Executable(); err == nil && strings.HasPrefix(filepath.Base(exe), ".update-monitor-") {
+					_ = os.Remove(exe)
+				}
 			}
 			if len(os.Args) != 5 {
+				cleanup()
 				os.Exit(2)
 			}
 			pid, _ := strconv.Atoi(os.Args[4])
-			if err := cli.CompleteUpdate(os.Args[2], os.Args[3] == "true", pid); err != nil {
+			err := cli.CompleteUpdate(os.Args[2], os.Args[3] == "true", pid)
+			cleanup()
+			if err != nil {
 				log.Print(err)
 				os.Exit(1)
 			}

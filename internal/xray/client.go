@@ -157,11 +157,38 @@ func (c *Client) AddUser(ctx context.Context, u UserConfig) error {
 		User: user,
 	}
 
-	_, err = handler.AlterInbound(ctx, &proxymancommand.AlterInboundRequest{
+	return c.alterInboundWithRetry(ctx, handler, &proxymancommand.AlterInboundRequest{
 		Tag:       u.Tag,
 		Operation: serial.ToTypedMessage(addUserOp),
 	})
-	return err
+}
+
+func (c *Client) alterInboundWithRetry(ctx context.Context, handler proxymancommand.HandlerServiceClient, req *proxymancommand.AlterInboundRequest) error {
+	backoff := 250 * time.Millisecond
+	const maxBackoff = 2 * time.Second
+	var lastErr error
+
+	for {
+		_, lastErr = handler.AlterInbound(ctx, req)
+		if lastErr == nil || status.Code(lastErr) != codes.Unavailable {
+			return lastErr
+		}
+
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("xray gRPC stayed unavailable: %w (request ended: %v)", lastErr, ctx.Err())
+		case <-timer.C:
+		}
+
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
 }
 
 func (c *Client) RemoveUser(ctx context.Context, tag string, username string) error {

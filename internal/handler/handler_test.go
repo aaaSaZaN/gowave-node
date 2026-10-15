@@ -9,6 +9,7 @@ import (
 	"github.com/remnawave/node-go/internal/hashedset"
 	"github.com/remnawave/node-go/internal/plugin"
 	"github.com/remnawave/node-go/internal/xray"
+	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
@@ -67,10 +68,26 @@ func TestBulkShadowsocks2022Encoding(t *testing.T) {
 func TestInvalidUserCannotMutate(t *testing.T) {
 	client := &fakeClient{}
 	service := NewService(client, xray.NewStateManager(), plugin.NewService(&plugin.NftManager{}))
-	response := httptest.NewRecorder()
-	service.HandleAddUser(response, httptest.NewRequest("POST", "/", strings.NewReader(`{"data":[]}`)))
-	if response.Code != 400 || len(client.added) != 0 {
-		t.Fatalf("status=%d", response.Code)
+	for _, handler := range []http.HandlerFunc{service.HandleAddUser, service.HandleRemoveUser, service.HandleAddUsers, service.HandleRemoveUsers, service.HandleDropUsersConnections, service.HandleDropIPs} {
+		response := httptest.NewRecorder()
+		handler(response, httptest.NewRequest("POST", "/", strings.NewReader(`{"data":[]}`)))
+		if response.Code != http.StatusOK || len(client.added) != 0 {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body)
+		}
+		var body map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		var result GenericSuccessResponse
+		if len(body) != 1 || body["response"] == nil {
+			t.Fatalf("unexpected envelope: %s", response.Body)
+		}
+		if err := json.Unmarshal(body["response"], &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Success || result.Error == nil || *result.Error == "" {
+			t.Fatalf("unexpected response: %s", response.Body)
+		}
 	}
 }
 

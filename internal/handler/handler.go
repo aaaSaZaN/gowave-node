@@ -129,7 +129,7 @@ func (s *Service) dropUser(ctx context.Context, user string) error {
 func (s *Service) HandleAddUser(w http.ResponseWriter, r *http.Request) {
 	var req AddUserRequest
 	if err := apiutil.Decode(r, &req); err != nil {
-		apiutil.Error(w, r, 400, "E000", err)
+		respond(w, err)
 		return
 	}
 	unlock := s.lockUsers([]string{req.Data[0].Username})
@@ -140,7 +140,7 @@ func (s *Service) HandleAddUser(w http.ResponseWriter, r *http.Request) {
 		respond(w, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	user := req.Data[0].Username
 	hash := req.HashData.VlessUUID
@@ -174,7 +174,7 @@ func (s *Service) HandleAddUser(w http.ResponseWriter, r *http.Request) {
 func (s *Service) HandleRemoveUser(w http.ResponseWriter, r *http.Request) {
 	var req RemoveUserRequest
 	if err := apiutil.Decode(r, &req); err != nil {
-		apiutil.Error(w, r, 400, "E000", err)
+		respond(w, err)
 		return
 	}
 	unlock := s.lockUsers([]string{req.Username})
@@ -195,7 +195,7 @@ func (s *Service) HandleRemoveUser(w http.ResponseWriter, r *http.Request) {
 func (s *Service) HandleAddUsers(w http.ResponseWriter, r *http.Request) {
 	var req AddUsersRequest
 	if err := apiutil.Decode(r, &req); err != nil {
-		apiutil.Error(w, r, 400, "E000", err)
+		respond(w, err)
 		return
 	}
 	unlock := s.lockUsers(userIDs(req))
@@ -241,7 +241,7 @@ func (s *Service) HandleAddUsers(w http.ResponseWriter, r *http.Request) {
 func (s *Service) HandleRemoveUsers(w http.ResponseWriter, r *http.Request) {
 	var req RemoveUsersRequest
 	if err := apiutil.Decode(r, &req); err != nil {
-		apiutil.Error(w, r, 400, "E000", err)
+		respond(w, err)
 		return
 	}
 	unlock := s.lockUsers(removedIDs(req))
@@ -264,7 +264,7 @@ func (s *Service) HandleRemoveUsers(w http.ResponseWriter, r *http.Request) {
 func (s *Service) HandleDropUsersConnections(w http.ResponseWriter, r *http.Request) {
 	var req DropUsersConnectionsRequest
 	if err := apiutil.Decode(r, &req); err != nil {
-		apiutil.Error(w, r, 400, "E000", err)
+		respond(w, err)
 		return
 	}
 	unlock := s.lockUsers(req.UserIDs)
@@ -286,7 +286,7 @@ func (s *Service) HandleDropUsersConnections(w http.ResponseWriter, r *http.Requ
 func (s *Service) HandleDropIPs(w http.ResponseWriter, r *http.Request) {
 	var req DropIPsRequest
 	if err := apiutil.Decode(r, &req); err != nil {
-		apiutil.Error(w, r, 400, "E000", err)
+		respond(w, err)
 		return
 	}
 	err := s.plugin.DropConnections(req.IPs)

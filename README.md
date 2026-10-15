@@ -1,5 +1,9 @@
 # Remnanode (Go)
 
+[![Release](https://github.com/aaaSaZaN/remnanode-go/actions/workflows/release.yml/badge.svg)](https://github.com/aaaSaZaN/remnanode-go/actions/workflows/release.yml)
+[![GitHub release](https://img.shields.io/github/v/release/aaaSaZaN/remnanode-go?include_prereleases&style=flat-square)](https://github.com/aaaSaZaN/remnanode-go/releases)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL_3.0-blue.svg?style=flat-square)](LICENSE)
+
 A Go implementation of the Remnawave node control plane. Xray runs as a separate
 process. The compatibility baseline is Remnawave Node v3.4.2, with native Linux
 systemd deployment as the primary target and the original s6 Xray execution path

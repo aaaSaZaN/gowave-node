@@ -30,3 +30,19 @@ func TestUpdateFailureRestoresPreviousExecutable(t *testing.T) {
 		t.Fatal("previous executable not restored")
 	}
 }
+
+func TestUpdateWaitsForNodeWithoutCoreConfiguration(t *testing.T) {
+	oldRestart, oldWait, oldDelay := restartNode, waitForReady, updateDelay
+	defer func() { restartNode = oldRestart; waitForReady = oldWait; updateDelay = oldDelay }()
+	restartNode = func() error { return nil }
+	waitForReady = func(core bool, timeout time.Duration, oldPID int) error {
+		if core || timeout != 120*time.Second || oldPID != 42 {
+			t.Fatalf("readiness arguments: core=%v timeout=%s pid=%d", core, timeout, oldPID)
+		}
+		return nil
+	}
+	updateDelay = 0
+	if err := CompleteUpdate(filepath.Join(t.TempDir(), "node"), true, 42); err != nil {
+		t.Fatal(err)
+	}
+}

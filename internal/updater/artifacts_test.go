@@ -159,3 +159,20 @@ func TestReleaseSelectionNeverSubstitutesMissingVersion(t *testing.T) {
 		t.Fatal(release, err)
 	}
 }
+
+func TestStockUpgradeCopyFailureClearsPendingMarker(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "rw-core")
+	if err := os.WriteFile(target, []byte("old"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := InstallStockCore(target+".missing", target); err == nil {
+		t.Fatal("missing candidate accepted")
+	}
+	if _, err := os.Stat(target + ".stock.pending"); !os.IsNotExist(err) {
+		t.Fatalf("pending marker remains: %v", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "old" {
+		t.Fatalf("active core changed: %q %v", data, err)
+	}
+}

@@ -51,7 +51,7 @@ func FetchReleases(repo string) ([]ReleaseInfo, error) {
 	if !regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`).MatchString(repo) {
 		return nil, fmt.Errorf("invalid repository")
 	}
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=15", repo)
+	url := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=100", repo)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

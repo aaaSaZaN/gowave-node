@@ -169,6 +169,7 @@ func (c *Controller) HandleStart(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if !c.process.GetStatus().Up {
+			_ = c.process.Stop()
 			c.state.Invalidate()
 			_ = c.process.RollbackActivation()
 			c.startResponse(w, false, errors.New("Xray Core exited before becoming ready"))

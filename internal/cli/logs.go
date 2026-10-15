@@ -49,6 +49,38 @@ func RunLogsCLI(logType string, args []string) {
 	if connectionErr != nil {
 		client = nil
 	}
+	fetch := func(count int) ([]string, error) {
+		url := fmt.Sprintf("http://unix/internal/logs?type=%s&lines=%d&format=json&token=%s", logType, count, token)
+		resp, err := client.Get(url)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return nil, fmt.Errorf("internal API HTTP %d", resp.StatusCode)
+		}
+
+		var data struct {
+			Response struct {
+				Logs []string `json:"logs"`
+			} `json:"response"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+			return nil, err
+		}
+		return data.Response.Logs, nil
+	}
+
+	var initialLogs []string
+	if client != nil {
+		defer client.CloseIdleConnections()
+		var err error
+		initialLogs, err = fetch(lines)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s[ERROR]%s Failed to fetch logs from socket %s: %v\n", colorRed, colorReset, chosenPath, err)
+			client = nil
+		}
+	}
 	if client == nil {
 		if logType == "xray" {
 			logPaths := []string{"/var/log/xray/current", "/var/log/xray.log"}
@@ -77,34 +109,6 @@ func RunLogsCLI(logType string, args []string) {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	seen := make(map[string]struct{})
-
-	fetch := func(count int) ([]string, error) {
-		url := fmt.Sprintf("http://unix/internal/logs?type=%s&lines=%d&format=json&token=%s", logType, count, token)
-		resp, err := client.Get(url)
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != 200 {
-			return nil, fmt.Errorf("internal API HTTP %d", resp.StatusCode)
-		}
-
-		var data struct {
-			Response struct {
-				Logs []string `json:"logs"`
-			} `json:"response"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-			return nil, err
-		}
-		return data.Response.Logs, nil
-	}
-
-	initialLogs, err := fetch(lines)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s[ERROR]%s Failed to fetch logs from socket %s: %v\n", colorRed, colorReset, chosenPath, err)
-		os.Exit(1)
-	}
 
 	for _, line := range initialLogs {
 		printFormattedLine(line)

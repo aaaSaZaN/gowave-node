@@ -481,10 +481,10 @@ func (s *Service) HandleUnblockIPs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err1 := s.NftManager.UnblockIPs(req.IPs, TorrentBlockerSetName)
-	err2 := s.NftManager.UnblockIPs(req.IPs, IngressFilterIPSetName)
+	_ = s.NftManager.UnblockIPs(req.IPs, IngressFilterIPSetName)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"response": map[string]interface{}{"accepted": err1 == nil && err2 == nil},
+		"response": map[string]interface{}{"accepted": err1 == nil},
 	})
 }
 

@@ -181,7 +181,7 @@ func (m *NftManager) BlockIP(ip string, timeout int) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.execute(fmt.Sprintf("update element inet %s %s { %s }", TableName, set, v))
+	return m.execute(fmt.Sprintf("add element inet %s %s { %s }", TableName, set, v))
 }
 func (m *NftManager) UnblockIPs(ips []string, set string) error {
 	script, err := addressCommands(ips, set, "delete")

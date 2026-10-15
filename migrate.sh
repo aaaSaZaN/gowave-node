@@ -30,6 +30,7 @@ previous_enabled=disabled
 restart_policy=no
 rollback() {
     code=$?
+    set +e
     trap - EXIT INT TERM
     if [[ $complete != true && $modified == true ]]; then
         log 'Readiness failed; restoring previous service.'

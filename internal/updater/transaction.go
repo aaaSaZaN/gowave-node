@@ -33,18 +33,22 @@ func InstallStockCore(candidate, target string) error {
 		}
 	}
 	if err := os.WriteFile(target+".stock.pending", []byte(marker), 0600); err != nil {
+		CommitUpdate(target)
 		return err
 	}
 	f, err := os.CreateTemp(filepath.Dir(target), ".stock-*")
 	if err != nil {
+		CommitUpdate(target)
 		return err
 	}
 	f.Close()
 	defer os.Remove(f.Name())
 	if err := CopyFile(candidate, f.Name()); err != nil {
+		CommitUpdate(target)
 		return err
 	}
 	if err := AtomicReplace(candidate, target); err != nil {
+		CommitUpdate(target)
 		return err
 	}
 	if err := AtomicReplace(f.Name(), target+".stock"); err != nil {
