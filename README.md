@@ -1,268 +1,176 @@
 # Remnanode (Go)
 
-Высокопроизводительный, легковесный Xray-core для панелей **Remnawave** и **Gowave**, написанный на **100% чистом Go**.
+A Go implementation of the Remnawave node control plane. Xray runs as a separate
+process. The compatibility baseline is Remnawave Node v3.4.2, with native Linux
+systemd deployment as the primary target and the original s6 Xray execution path
+retained.
 
-Remnanode (Go) — это полноценная замена официальной Node.js-ноды. больше не нужны тяжелые Node.js и зависимости: один компактный бинарник потребляет всего **~10–15 МБ RAM** и готов работать даже на слабых VPS, микро-инстансах и роутерах.
+The runtime needs no Node.js, Python, CGO, or LMDB library. Native installation
+and release-asset conversion use separate build/installation tools.
 
----
+## Build and test
 
-## Ключевые преимущества
+Use the Go version declared in `go.mod` (currently 1.27.1).
 
--  **Минимальное потребление памяти:** всего ~10–15 МБ RAM (против 50–150 МБ у оригинальной ноды на Node.js). * примерные данные , все зависит от вашего конфигурация Xray.
--  **Один статичный бинарник:**
--  **mTLS:** взаимная TLS-аутентификация с панелью через встроенный `SECRET_KEY`.
--  **Защита и плагины:**
-  - Встроенный сбор статистики и онлайна Xray-core.
-  - Поддержка Torrent Blocker (сбор репортов о BitTorrent активности).
-  - Управление правилами и блокировками через `nftables`.
-  - Принудительный сброс соединений и IP (`drop-ips`, `drop-users-connections`).
-- **Управление и обновления:** автоматическое обновление ядра Xray (`rw-core`) и самой ноды прямо из веб-панели управления.
--  **Широкая поддержка архитектур:**
-  - `x86_64` (`amd64`)
-  - `arm64` (ARMv8 / AArch64)
-  - `armv7` (ARMv7 / 32-bit одноплатники)
-  - `mips` / `mipsle` / `mips64` / `mips64le` (роутеры и сетевые шлюзы)
-
----
-
-## Архитектура и совместимость
-
-- **Поддерживаемые панели:** [Gowave](https://github.com/aaaSaZaN/remnawave-go) и оригинальный [Remnawave?](https://github.com/remnawave).
-- **Ядро Xray:** `/usr/local/bin/rw-core` (автоматически скачивается и валидируется нодой).
-- **Связь с панелью:** двусторонний шифрованный mTLS-канал по порту `3000` (или кастомному).
-
----
-
-## Миграция с Docker (Node.js/TS) на Native Go (~0s Downtime)
-
-Если на сервере уже работает нода в Docker (`remnawave/node`), переключить её на Go-ноду можно одной командой:
-
-```bash
-# Выполните на сервере ноды от root:
-curl -sSL https://raw.githubusercontent.com/aaaSaZaN/remnanode-go/main/migrate.sh | bash
+```sh
+CGO_ENABLED=0 go build -trimpath -o remnanode ./cmd/remnanode
+go test -race ./...
+go vet ./...
+python3 tests/test_scripts.py
 ```
 
-Скрипт автоматически обнаружит контейнер с нодой, перенесет `SECRET_KEY`, сертификаты, порты и конфигурацию в `/opt/remnanode`, создаст systemd-службу `remnanode.service`, запустит бинарник и остановит Docker-контейнер с минимальным даунтаймом (~0 секунд).
+To exercise a real core, download and verify it into a temporary directory:
 
----
-
-## Быстрый запуск (Готовые бинарники)
-
-Для работы ноды нужен только бинарник и строка `SECRET_KEY`, которую вы копируете из панели при добавлении ноды.
-
-### 1. Подготовка каталога
-```bash
-mkdir -p /opt/remnanode && cd /opt/remnanode
+```sh
+python3 scripts/fetch-test-core.py v26.7.28 /tmp/remnanode-core
+REMNANODE_TEST_CORE=/tmp/remnanode-core/rw-core go test -race ./internal/xray -run RealCore -v
 ```
 
-### 2. Скачивание бинарника под вашу архитектуру
+CI runs baseline/latest-stable core tests and isolated native/s6 HTTPS smoke tests
+on amd64 and arm64. ARMv7 and MIPS binaries are cross-built; router deployment is
+not certified by the server smoke tests.
 
-#### Для x86_64 (AMD / Intel):
-```bash
-curl -L -o remnanode https://github.com/aaaSaZaN/remnanode-go/releases/latest/download/remnanode-linux-amd64
-chmod +x remnanode
-```
+## Install or migrate
 
-#### Для arm64 (Apple Silicon VPS, Oracle ARM, Raspberry Pi 4/5):
-```bash
-curl -L -o remnanode https://github.com/aaaSaZaN/remnanode-go/releases/latest/download/remnanode-linux-arm64
-chmod +x remnanode
-```
+Run the reviewed `migrate.sh` as root on a systemd host. Prerequisites are curl,
+Python 3, tar, and sha256sum. The installer verifies published checksums for the
+node, portable ASN index, and geocheck (amd64/arm64), then verifies the selected
+Xray release before installing it.
 
-#### Для armv7 (32-bit ARM, Orange Pi, старые Raspberry Pi):
-```bash
-curl -L -o remnanode https://github.com/aaaSaZaN/remnanode-go/releases/latest/download/remnanode-linux-armv7
-chmod +x remnanode
-```
+It preserves the existing environment and checks referenced TLS files before
+stopping Docker. Referenced container paths must exist at the same locations on
+the native host. It waits up to 120 seconds for the panel to send configuration
+and Xray to become ready. Failure restores Docker and its previous restart
+policy. The old container is retained. Migration interrupts existing connections;
+downtime depends on panel synchronization and is measured rather than assumed.
 
-#### Для MIPS / MIPSLE (роутеры OpenWrt, Keenetic и др.):
-```bash
-# mipsle (Little Endian):
-curl -L -o remnanode https://github.com/aaaSaZaN/remnanode-go/releases/latest/download/remnanode-linux-mipsle
-# mips (Big Endian):
-curl -L -o remnanode https://github.com/aaaSaZaN/remnanode-go/releases/latest/download/remnanode-linux-mips
-chmod +x remnanode
-```
+To canary a published candidate, run `REMNANODE_VERSION=v1.0.6-rc.1 bash migrate.sh`.
+An unavailable explicitly selected tag fails without switching services.
 
----
+Candidate assets must include `checksums.txt`, `asn-prefixes.zip`, and the matching
+`remnanode-linux-<architecture>` binary. The Candidate artifacts workflow builds
+these files without publishing a release. Publish only after the Validation
+workflow and a canary migration pass.
 
-### 3. Настройка окружения (`.env`)
+## Configuration
 
-Создайте файл `/opt/remnanode/.env`:
+Place `.env` beside the executable or in `/opt/remnanode/.env`; explicitly set
+process environment values take precedence.
 
-```bash
-nano /opt/remnanode/.env
-```
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SECRET_KEY` | required | Panel-generated base64 certificate/JWT payload |
+| `NODE_PORT` | `3000` | TLS 1.3 management port; mTLS and RS256 JWT required |
+| `REMNANODE_RUNTIME_DIR` | `/run/remnanode` | Private configuration and CLI discovery directory |
+| `INTERNAL_REST_TOKEN` | random per process | Internal HTTP authentication; normally leave unset |
+| `INTERNAL_SOCKET_PATH` | random abstract name | Internal configuration/webhook socket |
+| `XTLS_API_SOCKET_PATH` | `/run/remnanode/xray.sock` | Xray gRPC endpoint |
+| `XRAY_CORE_PATH` | detected adjacent/system core | Explicit core executable |
+| `S6_COMMAND_DIR` | `/command` or PATH | Existing s6 command directory |
+| `XRAY_S6_SERVICE_DIR` | `/run/service/xray` | Existing supervised Xray service |
+| `XRAY_LOCATION_ASSET` | detected core asset directory | Geodata directory |
+| `ASN_INDEX_PATH` | `/usr/local/share/asn/asn-prefixes.zip` | Portable ASN index |
+| `SNI_VERIFICATION` | `false` | Require the panel-derived SNI, including on otherwise valid mTLS connections |
+| `NFTABLES_LOGGING` | `true` | Kernel firewall logging |
+| `NFTABLES_ACCEPT_REPLY_TRAFFIC` | `false` | Exempt connection reply traffic from ingress blocks |
+| `DISABLE_HASHED_SET_CHECK` | `false` | Force configuration synchronization to restart the core |
 
-Вставьте в него секретный ключ, скопированный из панели:
+Use a `0700` runtime directory owned by the service user. Configuration and CLI
+discovery files use `0600`. Existing explicit abstract Unix names remain
+supported. Explicit TCP management endpoints must use a loopback IP. Runtime
+configuration is never copied to `/etc/xray/config.json`.
 
-```env
-SECRET_KEY=вставьте_сюда_SECRET_KEY_из_панели
-NODE_PORT=3000
-```
-
-> [!TIP]
-> Убедитесь, что порт `3000` (или указанный в `NODE_PORT`) открыт в фаерволе вашего сервера:
-> `ufw allow 3000/tcp` или `iptables -I INPUT -p tcp --dport 3000 -j ACCEPT`.
-> `Лучше вообще не открывать порт в интернет.`
-
----
-
-### 4. Автозапуск через Systemd
-
-Создайте файл службы `/etc/systemd/system/remnanode.service`:
+For a manual native systemd service:
 
 ```ini
 [Unit]
-Description=Remnanode (Go) Service
-After=network.target
+Description=Remnanode (Go)
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/opt/remnanode
 ExecStart=/opt/remnanode/remnanode
-Restart=always
-RestartSec=5
-LimitNOFILE=1000000
+RuntimeDirectory=remnanode
+RuntimeDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Активируйте и запустите службу:
+Firewall enforcement requires `nft`, `ss` from iproute2, and CAP_NET_ADMIN.
+Unavailable or failed enforcement is reported to the panel. Geocheck requires
+`/usr/local/bin/geocheck`; unsupported/missing capabilities return errors.
 
-```bash
-systemctl daemon-reload
-systemctl enable --now remnanode
-systemctl status remnanode
-```
+## CLI and updates
 
----
-
-## Управление через консоль (CLI и системный `$PATH`)
-
-При первом запуске с правами root бинарник автоматически регистрирует символические ссылки в системных путях (`/usr/local/bin` на Linux серверах и `/opt/bin` на роутерах Entware):
-- `remnanode`
-- `remnanode-go`
-- `xlogs`
-
-Благодаря этому можно управлять нодой и смотреть логи из **любого каталога** системы:
-
-### 1. Проверка статуса
-```bash
+```sh
 remnanode status
-# или
-remnanode-go status
-```
-Отображает статус активности демона, доступность unix-сокета, состояние службы systemd и версию подключенного Xray-core.
-
-### 2. Мониторинг логов Xray-core
-```bash
-xlogs -f
-# или
+remnanode status --wait-ready
+remnanode logs -n 100 -f
 remnanode xlogs -n 100 -f
-```
-Цветной вывод логов ядра Xray в реальном времени с подсветкой ошибок (красный), предупреждений (желтый) и подключений пользователей (зеленый/голубой).
-- `-n <число>` — количество строк из истории (по умолчанию 100)
-- `-f` — режим отслеживания в реальном времени (follow)
-
-> [!TIP]
-> Команда `xlogs` доступна как самостоятельная утилита в `$PATH` — для быстрого дебага трафика достаточно набрать `xlogs -f` в терминале.
-
-### 3. Мониторинг логов самой ноды
-```bash
-remnanode logs -f
-# или
-remnanode-go logs -n 50
-```
-Выводит системные логи сервиса Remnanode (запросы панели по mTLS, синхронизация пользователей, Torrent Blocker и правила nftables).
-
-### 4. Перезапуск службы
-```bash
 remnanode restart
-```
-Быстрый перезапуск службы через systemd или init.d.
-
-### 5. Управление ядром Xray (`rw-core`)
-```bash
-# Скачать и установить Xray core:
-remnanode core install
-
-# Установить конкретную версию:
-remnanode core install --version v25.1.30 -y
-
-# Обновить ядро до последней версии:
-remnanode core update
-
-# Сбросить ядро к дефолтной конфигурации:
+remnanode update -y
+remnanode core install -y
+remnanode core install --version v26.7.28 -y
 remnanode core reset
 ```
 
-### 6. Самообновление Remnanode
-```bash
-# Интерактивный выбор и обновление бинарника из GitHub Releases:
-remnanode update
+CLI logs and status use the private discovery file, so run them as the service
+user. Add PATH symlinks explicitly or use those installed by `migrate.sh`;
+executing the binary does not overwrite system binaries or links.
 
-# Автоматическое обновление до стабильной версии:
-remnanode update -y
+Node updates default to `aaaSaZaN/remnanode-go`. Core installs default to the
+latest stable `XTLS/Xray-core` release. Explicit version requests never fall back
+to another version. Downloaded executables require a published SHA-256 digest
+or checksum manifest and are validated before replacement.
 
-# Обновление до pre-release:
-remnanode update --channel prerelease -y
-```
+Updates retain the preceding executable. Native HTTP updates use a separate
+systemd transient unit to monitor restart/readiness and restore the preceding
+executable on failure. CLI updates wait synchronously for restart. HTTP updates
+on an s6-only host require an external restart supervisor; without one, the
+endpoint rejects the update and restores the executable. Existing s6 Xray
+start/stop/configuration functionality is independent of that restriction. The
+recognized stock s6 run script is temporarily adapted to read the private JSON
+file, supporting cores without the Unix-HTTP loader; its original is restored on
+stop. Custom s6 scripts are preserved and should read that private file when
+using a core without Unix-HTTP configuration support.
 
-### 7. Версия и справка
-```bash
-remnanode version   # Вывод текущей версии
-remnanode help      # Справка по командам
-```
+Custom core configuration uses the original `xrayConfig.geodata.core` URL and
+SHA-256 fields. `geodata.assets` prepares named external data files. A custom
+core is staged and configuration-validated before activation. Removing custom
+core configuration or running `core reset` restores the managed stock core.
 
----
+## Compatibility and diagnostics
 
-## Переменные окружения (Environment Variables)
+All 25 original controller routes have contract fixtures. Compressed JSON
+requests support gzip, deflate, Brotli, and Zstandard, with the original 1000 MiB
+decoded-body limit. Traffic RPC failures retain the original error envelopes;
+user mutations return `success: false` if any requested mutation fails, while
+preserving successful changes for reconciliation. User IDs remain strings.
 
-Все настройки задаются через файл `.env` в директории ноды либо через системные переменные:
+Plugins include ingress/egress filters, ASN shared lists, torrent detection and
+reports, exclusion-aware connection destruction, socket-only pre-start cleanup,
+and post-start webhooks with metadata. The optional integration registry is
+empty, matching the concrete providers in the reference snapshot.
 
-| Переменная | По умолчанию | Описание |
-| :--- | :--- | :--- |
-| `SECRET_KEY` | *(обязательно)* | Ключ привязки к панели (содержит SSL-сертификаты и параметры ноды) |
-| `NODE_PORT` | `3000` | Порт mTLS сервера ноды для входящих запросов от панели |
-| `NFTABLES_LOGGING` | `true` | Логирование блокировок nftables в системный журнал |
-| `NFTABLES_ACCEPT_REPLY_TRAFFIC` | `false` | Разрешать ответный трафик для заблокированных адресов |
-| `SNI_VERIFICATION` | `false` | Дополнительная верификация SNI |
-| `INTERNAL_REST_TOKEN` | `remnanode-internal-secret` | Токен для внутренних локальных вызовов |
-| `XTLS_API_SOCKET_PATH` | `rw-api.sock` | Путь к Unix-сокету статистики Xray-core |
+Memory depends on user count, configuration, and workload. Measure the Go daemon
+and Xray separately; there is no fixed 10–15 MB guarantee. See `docs/validation.md`
+for reproducible checks and release limitations.
 
----
+## ASN asset generation
 
-## Сборка из исходников
+`scripts/build-asn.sh output.zip` downloads the upstream LMDB index, exports it
+with the build-only `lmdb@3.5.6` module, and creates a deterministic portable ZIP.
+The runtime loads individual ASN entries on demand and caches at most 64 entries.
+Build requirements are Node.js/npm, Python 3, curl, and zstd. They are not needed
+on an installed node.
 
-Для самостоятельной компиляции требуется **Go 1.22+**:
-
-```bash
-git clone https://github.com/aaaSaZaN/remnanode-go.git
-cd remnanode-go
-
-# Сборка под текущую ОС и архитектуру:
-go build -ldflags="-s -w" -o remnanode cmd/remnanode/main.go
-
-# Кросс-компиляция под Linux amd64:
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o remnanode-linux-amd64 cmd/remnanode/main.go
-
-# Кросс-компиляция под Linux arm64:
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o remnanode-linux-arm64 cmd/remnanode/main.go
-```
-
----
-
-## Совместимость и документация
-
-- **Панель Gowave (Go):** [https://github.com/aaaSaZaN/remnawave-go](https://github.com/aaaSaZaN/remnawave-go)
-- **Официальная документация экосистемы:** [https://docs.rw](https://docs.rw)
-
----
-
-## Автор и благодарности
-
-- Разработка Go-версии (**remnanode-go**): [@aaaSaZaN](https://github.com/aaaSaZaN)
-- Оригинальный проект и архитектура: [Remnawave](https://github.com/remnawave)
+The original projects are [Remnawave Node](https://github.com/remnawave/node) and
+[Xray-core](https://github.com/XTLS/Xray-core).
