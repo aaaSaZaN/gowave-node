@@ -1,8 +1,10 @@
 package lock
 
 import (
+	"errors"
 	"log"
 	"net"
+	"syscall"
 )
 
 var lockListener net.Listener
@@ -11,6 +13,9 @@ var lockListener net.Listener
 func AcquireInstanceLock() bool {
 	l, err := net.Listen("unix", "\x00rwnode-lock")
 	if err != nil {
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return false
+		}
 		// try filesystem fallback on non-linux
 		l, err = net.Listen("unix", "/tmp/rwnode-lock.sock")
 		if err != nil {

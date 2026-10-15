@@ -1,8 +1,9 @@
 package xray
 
 import (
-	"strings"
 	"fmt"
+	"net/url"
+	"strings"
 )
 
 type TorrentBlockerState struct {
@@ -23,6 +24,7 @@ func GenerateApiConfig(
 	internal InternalConfig,
 	capNetAdmin bool,
 ) map[string]interface{} {
+	baseConfig = cloneConfig(baseConfig)
 	result := make(map[string]interface{})
 	for k, v := range baseConfig {
 		result[k] = v
@@ -32,20 +34,18 @@ func GenerateApiConfig(
 	result["stats"] = map[string]interface{}{}
 
 	apiListen := internal.XtlsApiSocketPath
-	if apiListen == "" || !strings.Contains(apiListen, ":") {
-		apiListen = "127.0.0.1:62085"
+	if apiListen == "" {
+		apiListen = "/run/remnanode/xray.sock"
 	}
-
-	// api
-	result["api"] = map[string]interface{}{
-		"tag":    "REMNAWAVE_API",
-		"listen": apiListen,
-		"services": []string{
-			"HandlerService",
-			"StatsService",
-			"RoutingService",
-		},
+	api := map[string]interface{}{
+		"tag":      "REMNAWAVE_API",
+		"services": []string{"HandlerService", "StatsService", "RoutingService"},
 	}
+	unixAPI := !strings.Contains(apiListen, ":") || strings.HasPrefix(apiListen, "unix:")
+	if !unixAPI {
+		api["listen"] = apiListen
+	}
+	result["api"] = api
 
 	// policy
 	levels := map[string]interface{}{
@@ -79,6 +79,15 @@ func GenerateApiConfig(
 
 	// inbounds
 	var inbounds []interface{}
+	if unixAPI {
+		listen := strings.TrimPrefix(apiListen, "unix:")
+		if !strings.HasPrefix(listen, "/") && !strings.HasPrefix(listen, "@") {
+			listen = "@" + listen
+		}
+		// Older stable cores require an explicit UNIX network and nonzero
+		// nominal destination port; the API routing rule consumes the connection.
+		inbounds = append(inbounds, map[string]interface{}{"tag": "REMNAWAVE_API_INBOUND", "listen": listen, "protocol": "tunnel", "settings": map[string]interface{}{"network": "unix", "address": "127.0.0.1", "port": 1}})
+	}
 	if existingInbounds, ok := baseConfig["inbounds"].([]interface{}); ok {
 		inbounds = append(inbounds, existingInbounds...)
 	}
@@ -92,6 +101,9 @@ func GenerateApiConfig(
 
 	// routing rules
 	var rules []interface{}
+	if unixAPI {
+		rules = append(rules, map[string]interface{}{"inboundTag": []string{"REMNAWAVE_API_INBOUND"}, "outboundTag": "REMNAWAVE_API"})
+	}
 
 	if existingRouting, ok := baseConfig["routing"].(map[string]interface{}); ok {
 		if existingRules, ok := existingRouting["rules"].([]interface{}); ok {
@@ -107,7 +119,7 @@ func GenerateApiConfig(
 
 	// torrent blocker integration
 	if tbState.Enabled {
-		webhookURL := fmt.Sprintf("@%s:/internal/webhook?token=%s", internal.SocketPath, internal.Token)
+		webhookURL := fmt.Sprintf("@%s:/internal/webhook?token=%s", strings.TrimPrefix(strings.TrimPrefix(internal.SocketPath, "unix:"), "@"), url.QueryEscape(internal.Token))
 
 		outbounds = append(outbounds, map[string]interface{}{
 			"tag":      "RW_TB_OUTBOUND_BLOCK",
@@ -124,7 +136,7 @@ func GenerateApiConfig(
 		}
 
 		// insert at rulePosition
-		insertIdx := resolveRuleIndex(tbState.RulePosition, len(rules))
+		insertIdx := min(max(tbState.RulePosition, 0)+map[bool]int{true: 1, false: 0}[unixAPI], len(rules))
 		if insertIdx >= len(rules) {
 			rules = append(rules, tbRule)
 		} else {

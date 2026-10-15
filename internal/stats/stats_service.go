@@ -1,10 +1,10 @@
 package stats
 
 import (
-	"strconv"
-	"strings"
 	"context"
 	"encoding/json"
+	"errors"
+	"github.com/remnawave/node-go/internal/apiutil"
 	"net/http"
 	"time"
 
@@ -35,7 +35,10 @@ type GetUserOnlineStatusRequest struct {
 
 func (s *StatsService) HandleGetUserOnlineStatus(w http.ResponseWriter, r *http.Request) {
 	var req GetUserOnlineStatusRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := apiutil.Decode(r, &req); err != nil {
+		apiutil.Error(w, r, 400, "E000", err)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -58,6 +61,10 @@ func (s *StatsService) HandleGetSystemStats(w http.ResponseWriter, r *http.Reque
 	defer cancel()
 
 	sysStats, err := s.xrayClient.GetSysStats(ctx)
+	if err != nil {
+		apiutil.Error(w, r, 500, "A010", err)
+		return
+	}
 	var xrayInfo interface{} = nil
 	if err == nil && sysStats != nil {
 		xrayInfo = map[string]interface{}{
@@ -97,13 +104,20 @@ type ResetRequest struct {
 
 func (s *StatsService) HandleGetUsersStats(w http.ResponseWriter, r *http.Request) {
 	var req ResetRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := apiutil.Decode(r, &req); err != nil {
+		apiutil.Error(w, r, 400, "E000", err)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	users, err := s.xrayClient.GetAllUsersStats(ctx, req.Reset)
-	if err != nil || users == nil {
+	if err != nil {
+		apiutil.Error(w, r, 500, "A011", err)
+		return
+	}
+	if users == nil {
 		users = []xray.UserTraffic{}
 	}
 
@@ -122,13 +136,20 @@ type InboundStatsRequest struct {
 
 func (s *StatsService) HandleGetInboundStats(w http.ResponseWriter, r *http.Request) {
 	var req InboundStatsRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := apiutil.Decode(r, &req); err != nil {
+		apiutil.Error(w, r, 400, "E000", err)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	ib, err := s.xrayClient.GetInboundStats(ctx, req.Tag, req.Reset)
-	if err != nil || ib == nil {
+	if err != nil {
+		apiutil.Error(w, r, 500, "A012", err)
+		return
+	}
+	if ib == nil {
 		ib = &xray.InboundTraffic{Inbound: req.Tag}
 	}
 
@@ -149,13 +170,20 @@ type OutboundStatsRequest struct {
 
 func (s *StatsService) HandleGetOutboundStats(w http.ResponseWriter, r *http.Request) {
 	var req OutboundStatsRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := apiutil.Decode(r, &req); err != nil {
+		apiutil.Error(w, r, 400, "E000", err)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	ob, err := s.xrayClient.GetOutboundStats(ctx, req.Tag, req.Reset)
-	if err != nil || ob == nil {
+	if err != nil {
+		apiutil.Error(w, r, 500, "A013", err)
+		return
+	}
+	if ob == nil {
 		ob = &xray.OutboundTraffic{Outbound: req.Tag}
 	}
 
@@ -171,13 +199,20 @@ func (s *StatsService) HandleGetOutboundStats(w http.ResponseWriter, r *http.Req
 // getAllInboundsStats
 func (s *StatsService) HandleGetAllInboundsStats(w http.ResponseWriter, r *http.Request) {
 	var req ResetRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := apiutil.Decode(r, &req); err != nil {
+		apiutil.Error(w, r, 400, "E000", err)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	inbounds, err := s.xrayClient.GetAllInboundsStats(ctx, req.Reset)
-	if err != nil || inbounds == nil {
+	if err != nil {
+		apiutil.Error(w, r, 500, "A015", err)
+		return
+	}
+	if inbounds == nil {
 		inbounds = []xray.InboundTraffic{}
 	}
 
@@ -191,13 +226,20 @@ func (s *StatsService) HandleGetAllInboundsStats(w http.ResponseWriter, r *http.
 // getAllOutboundsStats
 func (s *StatsService) HandleGetAllOutboundsStats(w http.ResponseWriter, r *http.Request) {
 	var req ResetRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := apiutil.Decode(r, &req); err != nil {
+		apiutil.Error(w, r, 400, "E000", err)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	outbounds, err := s.xrayClient.GetAllOutboundsStats(ctx, req.Reset)
-	if err != nil || outbounds == nil {
+	if err != nil {
+		apiutil.Error(w, r, 500, "A016", err)
+		return
+	}
+	if outbounds == nil {
 		outbounds = []xray.OutboundTraffic{}
 	}
 
@@ -211,13 +253,24 @@ func (s *StatsService) HandleGetAllOutboundsStats(w http.ResponseWriter, r *http
 // getCombinedStats
 func (s *StatsService) HandleGetCombinedStats(w http.ResponseWriter, r *http.Request) {
 	var req ResetRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := apiutil.Decode(r, &req); err != nil {
+		apiutil.Error(w, r, 400, "E000", err)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	inbounds, _ := s.xrayClient.GetAllInboundsStats(ctx, req.Reset)
-	outbounds, _ := s.xrayClient.GetAllOutboundsStats(ctx, req.Reset)
+	inbounds, err := s.xrayClient.GetAllInboundsStats(ctx, req.Reset)
+	if err != nil {
+		apiutil.Error(w, r, 500, "A017", err)
+		return
+	}
+	outbounds, err := s.xrayClient.GetAllOutboundsStats(ctx, req.Reset)
+	if err != nil {
+		apiutil.Error(w, r, 500, "A017", err)
+		return
+	}
 	if inbounds == nil {
 		inbounds = []xray.InboundTraffic{}
 	}
@@ -240,13 +293,20 @@ type UserIPListRequest struct {
 
 func (s *StatsService) HandleGetUserIPList(w http.ResponseWriter, r *http.Request) {
 	var req UserIPListRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := apiutil.Decode(r, &req); err != nil {
+		apiutil.Error(w, r, 400, "E000", err)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	ips, err := s.xrayClient.GetStatsOnlineIPList(ctx, req.UserID, true)
-	if err != nil || ips == nil {
+	if err != nil {
+		apiutil.Error(w, r, 500, "A014", err)
+		return
+	}
+	if ips == nil {
 		ips = []xray.UserIPSeen{}
 	}
 
@@ -257,72 +317,28 @@ func (s *StatsService) HandleGetUserIPList(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-type UserIPListResponseItem struct {
-	UserID interface{}       `json:"userId"`
-	IPs    []xray.UserIPSeen `json:"ips"`
-}
-
-// getUsersIPList
 func (s *StatsService) HandleGetUsersIPList(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-
-	users, err := s.xrayClient.GetAllOnlineUsers(ctx)
-	if err != nil || len(users) == 0 {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"response": map[string]interface{}{
-				"users": []UserIPListResponseItem{},
-			},
-		})
+	users, err := s.xrayClient.GetUsersIPList(ctx)
+	if err != nil {
+		apiutil.Error(w, r, 500, "A014", err)
 		return
 	}
-
-	onlineUserIDs := make(map[string]bool)
-	for _, raw := range users {
-		parts := strings.Split(raw, ">>>")
-		if len(parts) >= 2 {
-			onlineUserIDs[parts[1]] = true
-		} else {
-			onlineUserIDs[raw] = true
-		}
-	}
-
-	var result []UserIPListResponseItem
-	for uidStr := range onlineUserIDs {
-		ips, err := s.xrayClient.GetStatsOnlineIPList(ctx, uidStr, true)
-		if err == nil && len(ips) > 0 {
-			var uidVal interface{} = uidStr
-			if idInt, err := strconv.Atoi(uidStr); err == nil {
-				uidVal = idInt
-			}
-			result = append(result, UserIPListResponseItem{
-				UserID: uidVal,
-				IPs:    ips,
-			})
-		}
-	}
-
-	if result == nil {
-		result = []UserIPListResponseItem{}
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"response": map[string]interface{}{
-			"users": result,
-		},
-	})
+	writeJSON(w, 200, map[string]interface{}{"response": map[string]interface{}{"users": users}})
 }
 
 // getGeocheck
 func (s *StatsService) HandleGetGeocheck(w http.ResponseWriter, r *http.Request) {
 	var req GeocheckRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := apiutil.Decode(r, &req); err != nil {
+		apiutil.Error(w, r, 400, "E000", err)
+		return
+	}
 
-	report, err := s.geocheck.Run(req)
+	report, err := s.geocheck.Run(r.Context(), req)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"error": err.Error(),
-		})
+		apiutil.Error(w, r, 500, "A018", err)
 		return
 	}
 
@@ -335,4 +351,29 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(data)
+}
+
+func (r *GetUserOnlineStatusRequest) Validate() error {
+	if r.Username == "" {
+		return errors.New("username is required")
+	}
+	return nil
+}
+func (r *InboundStatsRequest) Validate() error {
+	if r.Tag == "" {
+		return errors.New("tag is required")
+	}
+	return nil
+}
+func (r *OutboundStatsRequest) Validate() error {
+	if r.Tag == "" {
+		return errors.New("tag is required")
+	}
+	return nil
+}
+func (r *UserIPListRequest) Validate() error {
+	if r.UserID == "" {
+		return errors.New("userId is required")
+	}
+	return nil
 }

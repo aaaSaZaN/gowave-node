@@ -15,8 +15,11 @@ import (
 	"sync"
 	"time"
 
+	"errors"
+	"github.com/remnawave/node-go/internal/config"
 	"github.com/remnawave/node-go/internal/logger"
 	"github.com/remnawave/node-go/internal/updater"
+	"syscall"
 )
 
 var versionRe = regexp.MustCompile(`(?:Xray|rw-core)\s+v?([0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9.-]*)`)
@@ -28,17 +31,30 @@ type ProcessStatus struct {
 }
 
 type ProcessManager struct {
-	mu          sync.Mutex
-	serviceDir  string
-	controlFifo string
-	s6Available bool
-	directCmd   *exec.Cmd
-	configPath  string
-	execPath    string
-	ringBuffer  *logger.RingBuffer
+	custom        bool
+	pendingCustom bool
+	activated     bool
+	mu            sync.Mutex
+	serviceDir    string
+	controlFifo   string
+	s6Available   bool
+	directCmd     *exec.Cmd
+	done          chan struct{}
+	exitErr       error
+	assetDir      string
+	pendingCore   string
+	configPath    string
+	execPath      string
+	ringBuffer    *logger.RingBuffer
 }
 
 func FindCorePath(s6Available bool) string {
+	if path := os.Getenv("XRAY_CORE_PATH"); path != "" {
+		if fi, err := os.Stat(path); err == nil && !fi.IsDir() {
+			return path
+		}
+		return ""
+	}
 	// In S6 Docker container, Xray is pre-baked in /usr/local/bin
 	if s6Available {
 		for _, p := range []string{"/usr/local/bin/rw-core", "/usr/local/bin/xray"} {
@@ -69,6 +85,11 @@ func FindCorePath(s6Available bool) string {
 		}
 	}
 
+	for _, path := range []string{"/usr/local/bin/rw-core", "/usr/local/bin/xray"} {
+		if fi, err := os.Stat(path); err == nil && !fi.IsDir() {
+			return path
+		}
+	}
 	return ""
 }
 
@@ -93,14 +114,18 @@ func NewProcessManager(serviceDir string, ringBuffer *logger.RingBuffer) *Proces
 			log.Printf("[CORE] Warning: Xray core not found and auto-download failed: %v", err)
 		}
 	} else if execPath != "" {
-		_ = updater.EnsureGeodata(filepath.Dir(execPath), "/opt/remnanode", "/usr/local/share/xray")
+		if err := updater.EnsureGeodata(assetDirectory(execPath)); err != nil {
+			log.Printf("[CORE] geodata preparation failed: %v", err)
+		}
 	}
 
 	return &ProcessManager{
 		serviceDir:  serviceDir,
 		controlFifo: controlFifo,
 		s6Available: s6Available,
-		configPath:  "/tmp/rw-xray-config.json",
+		configPath:  filepath.Join(config.RuntimeDir(), "xray.json"),
+		assetDir:    assetDirectory(execPath),
+		custom:      updater.IsCustomCore(execPath),
 		execPath:    execPath,
 		ringBuffer:  ringBuffer,
 	}
@@ -124,63 +149,102 @@ func (p *ProcessManager) IsControlAvailable() bool {
 	return p.s6Available || p.execPath != ""
 }
 
-func (p *ProcessManager) Start(configMap map[string]interface{}) error {
+func assetDirectory(core string) string {
+	if dir := os.Getenv("XRAY_LOCATION_ASSET"); dir != "" {
+		return dir
+	}
+	for _, dir := range []string{filepath.Dir(core), "/usr/local/share/xray", "/opt/remnanode", "/usr/share/xray"} {
+		if _, err := os.Stat(filepath.Join(dir, "geoip.dat")); err == nil {
+			return dir
+		}
+	}
+	return filepath.Dir(core)
+}
+func (p *ProcessManager) Prepare(ctx context.Context, geodata interface{}) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	configBytes, err := json.MarshalIndent(configMap, "", "  ")
-	if err == nil {
-		_ = os.WriteFile(p.configPath, configBytes, 0644)
-		_ = os.WriteFile("/etc/xray/config.json", configBytes, 0644)
+	candidate, err := updater.PrepareCore(ctx, p.execPath, geodata)
+	if err != nil {
+		return err
 	}
-
+	if p.pendingCore != "" && p.pendingCore != p.execPath && p.pendingCore != p.execPath+".stock" {
+		os.Remove(p.pendingCore)
+	}
+	p.pendingCore = candidate
+	p.pendingCustom = false
+	if cfg, ok := geodata.(map[string]interface{}); ok {
+		p.pendingCustom = cfg["core"] != nil
+	}
+	return updater.PrepareAssets(ctx, p.assetDir, geodata)
+}
+func (p *ProcessManager) command(ctx context.Context, args ...string) *exec.Cmd {
+	path := p.execPath
+	if p.pendingCore != "" {
+		path = p.pendingCore
+	}
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+p.assetDir, "xray.location.asset="+p.assetDir)
+	return cmd
+}
+func (p *ProcessManager) ValidateConfig(ctx context.Context, cfg map[string]interface{}) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	stage := p.configPath + ".validate"
+	if err = config.WritePrivate(stage, data); err != nil {
+		return err
+	}
+	defer os.Remove(stage)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	out, err := p.command(ctx, "run", "-test", "-format", "json", "-config", stage).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("invalid Xray configuration: %w: %s", err, out)
+	}
+	return nil
+}
+func (p *ProcessManager) Start(cfg map[string]interface{}) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	if err = config.WritePrivate(p.configPath, data); err != nil {
+		return err
+	}
+	if p.pendingCore != "" && p.pendingCore != p.execPath {
+		candidate := p.pendingCore
+		if err := updater.ActivateCore(candidate, p.execPath); err != nil {
+			return err
+		}
+		p.activated = true
+		if candidate != p.execPath+".stock" {
+			os.Remove(candidate)
+		}
+		p.pendingCore = ""
+	}
+	p.custom = p.pendingCustom
 	if p.s6Available {
+		if err := p.prepareS6Run(); err != nil {
+			return err
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "/command/s6-svc", "-wu", "-T", "10000", "-o", p.serviceDir)
-		out, err := cmd.CombinedOutput()
+		out, err := exec.CommandContext(ctx, s6Command("s6-svc"), "-wu", "-T", "10000", "-o", p.serviceDir).CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("s6 start failed: %w (output: %s)", err, string(out))
+			return fmt.Errorf("s6 start: %w: %s", err, out)
 		}
 		return nil
 	}
-
-	if p.directCmd != nil && p.directCmd.Process != nil {
-		_ = p.directCmd.Process.Kill()
-		_ = p.directCmd.Wait()
-		p.directCmd = nil
+	if p.directCmd != nil {
+		return errors.New("core is already running")
 	}
-
-	cmd := exec.Command(p.execPath, "run", "-c", p.configPath)
-
-	assetDir := filepath.Dir(p.execPath)
-	_ = updater.EnsureGeodata(assetDir, "/opt/remnanode", "/usr/local/share/xray")
-
-	candidates := []string{
-		"/usr/local/share/xray",
-		"/opt/remnanode",
-		assetDir,
-		"/opt/share/xray",
-		"/opt/etc/xray/dat",
-		"/usr/share/xray",
-	}
-	if exe, err := os.Executable(); err == nil {
-		candidates = append([]string{filepath.Dir(exe)}, candidates...)
-	}
-
-	for _, candidate := range candidates {
-		if _, err := os.Stat(filepath.Join(candidate, "geoip.dat")); err == nil {
-			assetDir = candidate
-			break
-		}
-	}
-
-	cmd.Dir = assetDir
-	cmd.Env = append(os.Environ(),
-		"XRAY_LOCATION_ASSET="+assetDir,
-		"xray.location.asset="+assetDir,
-	)
-
+	cmd := exec.Command(p.execPath, "run", "-config", p.configPath)
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+p.assetDir, "xray.location.asset="+p.assetDir)
 	if p.ringBuffer != nil {
 		cmd.Stdout = io.MultiWriter(os.Stdout, p.ringBuffer)
 		cmd.Stderr = io.MultiWriter(os.Stderr, p.ringBuffer)
@@ -188,34 +252,53 @@ func (p *ProcessManager) Start(configMap map[string]interface{}) error {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 	}
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("direct core start failed: %w", err)
+	if err = cmd.Start(); err != nil {
+		return err
 	}
+	done := make(chan struct{})
+	p.done = done
 	p.directCmd = cmd
+	p.exitErr = nil
+	go func() {
+		err := cmd.Wait()
+		close(done)
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.directCmd == cmd {
+			p.directCmd = nil
+			p.exitErr = err
+		}
+	}()
 	return nil
 }
-
 func (p *ProcessManager) Stop() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
 	if p.s6Available {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "/command/s6-svc", "-wd", "-T", "10000", "-d", p.serviceDir)
-		out, err := cmd.CombinedOutput()
+		out, err := exec.CommandContext(ctx, s6Command("s6-svc"), "-wd", "-T", "10000", "-d", p.serviceDir).CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("s6 stop failed: %w (output: %s)", err, string(out))
+			return fmt.Errorf("s6 stop: %w: %s", err, out)
 		}
+		return p.restoreS6Run()
+	}
+	if p.directCmd == nil {
 		return nil
 	}
-
-	if p.directCmd != nil && p.directCmd.Process != nil {
-		_ = p.directCmd.Process.Kill()
-		_ = p.directCmd.Wait()
-		p.directCmd = nil
+	cmd := p.directCmd
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
 	}
+	select {
+	case <-p.done:
+	case <-time.After(5 * time.Second):
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return err
+		}
+		<-p.done
+	}
+	p.directCmd = nil
 	return nil
 }
 
@@ -223,7 +306,7 @@ func (p *ProcessManager) GetCoreVersion() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, p.execPath, "version")
+	cmd := exec.CommandContext(ctx, p.GetExecPath(), "version")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", err
@@ -249,7 +332,7 @@ func (p *ProcessManager) GetStatus() ProcessStatus {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, "/command/s6-svstat", "-o", "up,pid", p.serviceDir)
+		cmd := exec.CommandContext(ctx, s6Command("s6-svstat"), "-o", "up,pid", p.serviceDir)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return ProcessStatus{Up: false, PID: 0, Raw: err.Error()}
@@ -264,8 +347,13 @@ func (p *ProcessManager) GetStatus() ProcessStatus {
 	}
 
 	if p.directCmd != nil && p.directCmd.Process != nil {
+		select {
+		case <-p.done:
+			return ProcessStatus{Raw: "exited"}
+		default:
+		}
 		pid := p.directCmd.Process.Pid
-		return ProcessStatus{Up: pid > 0, PID: pid, Raw: fmt.Sprintf("up, pid %d", pid)}
+		return ProcessStatus{Up: true, PID: pid, Raw: fmt.Sprintf("up, pid %d", pid)}
 	}
 
 	return ProcessStatus{Up: false, PID: 0, Raw: "stopped"}
@@ -302,4 +390,35 @@ func (p *ProcessManager) TailLog(lines int) []string {
 		}
 	}
 	return nil
+}
+
+func (p *ProcessManager) RollbackActivation() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.activated {
+		return nil
+	}
+	if err := updater.Rollback(p.execPath); err != nil {
+		return err
+	}
+	p.activated = false
+	p.custom = updater.IsCustomCore(p.execPath)
+	return nil
+}
+func (p *ProcessManager) CommitActivation() { p.mu.Lock(); defer p.mu.Unlock(); p.activated = false }
+
+func (p *ProcessManager) IsCustom() bool { p.mu.Lock(); defer p.mu.Unlock(); return p.custom }
+
+func s6Command(name string) string {
+	if dir := os.Getenv("S6_COMMAND_DIR"); dir != "" {
+		return filepath.Join(dir, name)
+	}
+	fixed := filepath.Join("/command", name)
+	if _, err := os.Stat(fixed); err == nil {
+		return fixed
+	}
+	if path, err := exec.LookPath(name); err == nil {
+		return path
+	}
+	return fixed
 }

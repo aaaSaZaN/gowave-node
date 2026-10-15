@@ -1,45 +1,20 @@
 package cli
 
 import (
-	"context"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 func RunStatusCLI(version string) {
 	fmt.Printf("%s[STATUS]%s Checking Remnanode service status...\n\n", colorCyan, colorReset)
 
-	socketPaths := []string{
-		"/var/lib/remnanode/rw-node.sock",
-		"rw-node.sock",
-		"/tmp/rw-node.sock",
-		"/run/remnanode/rw-node.sock",
-		"\x00rw-node.sock",
+	activeSocket := ""
+	if Ready(false) {
+		activeSocket = "managed runtime socket"
 	}
-
-	var activeSocket string
-	for _, p := range socketPaths {
-		transport := &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "unix", p)
-			},
-		}
-		c := &http.Client{Transport: transport, Timeout: 1 * time.Second}
-		resp, err := c.Get("http://unix/internal/logs?type=node&lines=1&format=json")
-		if err == nil {
-			_ = resp.Body.Close()
-			activeSocket = p
-			break
-		}
-	}
-
 	// 1. Daemon socket status
 	if activeSocket != "" {
 		fmt.Printf("  %s●%s Daemon (Socket):   %sRUNNING%s (%s)\n", colorGreen, colorReset, colorGreen, colorReset, activeSocket)

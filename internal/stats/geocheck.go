@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -26,7 +27,7 @@ type GeocheckRequest struct {
 	Interface *string `json:"interface"`
 }
 
-func (g *GeocheckService) Run(req GeocheckRequest) (map[string]interface{}, error) {
+func (g *GeocheckService) Run(parent context.Context, req GeocheckRequest) (map[string]interface{}, error) {
 	g.mu.Lock()
 	if g.isRunning {
 		g.mu.Unlock()
@@ -57,11 +58,14 @@ func (g *GeocheckService) Run(req GeocheckRequest) (map[string]interface{}, erro
 		args = append([]string{"--interface", bindTo}, args...)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 45*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "/usr/local/bin/geocheck", args...)
-	out, err := cmd.Output()
+	output := &limitedOutput{limit: 32 * 1024 * 1024}
+	cmd.Stdout = output
+	err := cmd.Run()
+	out := output.Bytes()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, errors.New("Geocheck: execution exceeded 45s and was killed.")
@@ -74,5 +78,21 @@ func (g *GeocheckService) Run(req GeocheckRequest) (map[string]interface{}, erro
 		return nil, fmt.Errorf("Geocheck produced invalid JSON: %w", err)
 	}
 
+	image, ok := report["image"].(map[string]interface{})
+	if !ok || image["data"] == nil || image["data"] == "" {
+		return nil, errors.New("geocheck report carries no image")
+	}
 	return report, nil
+}
+
+type limitedOutput struct {
+	bytes.Buffer
+	limit int
+}
+
+func (b *limitedOutput) Write(p []byte) (int, error) {
+	if len(p) > b.limit-b.Len() {
+		return 0, errors.New("geocheck output exceeds 32 MiB")
+	}
+	return b.Buffer.Write(p)
 }

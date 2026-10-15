@@ -1,6 +1,7 @@
 package xray
 
 import (
+	"encoding/json"
 	"log"
 	"sync"
 
@@ -19,6 +20,7 @@ type HashesInfo struct {
 }
 
 type StateManager struct {
+	Operation          sync.RWMutex
 	mu                 sync.RWMutex
 	xrayConfig         map[string]interface{}
 	emptyConfigHash    string
@@ -36,13 +38,13 @@ func NewStateManager() *StateManager {
 func (s *StateManager) GetXrayConfig() map[string]interface{} {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.xrayConfig
+	return cloneConfig(s.xrayConfig)
 }
 
 func (s *StateManager) SetXrayConfig(cfg map[string]interface{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.xrayConfig = cfg
+	s.xrayConfig = cloneConfig(cfg)
 }
 
 func (s *StateManager) ExtractUsersFromConfig(hashes HashesInfo, newConfig map[string]interface{}) {
@@ -51,7 +53,7 @@ func (s *StateManager) ExtractUsersFromConfig(hashes HashesInfo, newConfig map[s
 
 	s.cleanupLocked()
 	s.emptyConfigHash = hashes.EmptyConfig
-	s.xrayConfig = newConfig
+	s.xrayConfig = cloneConfig(newConfig)
 
 	validTags := make(map[string]struct{})
 	remoteHashByTag := make(map[string]string)
@@ -149,10 +151,7 @@ func (s *StateManager) RemoveUserFromInbound(inboundTag, userUUID string) {
 		return
 	}
 	usersSet.Delete(userUUID)
-	if usersSet.Size() == 0 {
-		delete(s.inboundsHashMap, inboundTag)
-		delete(s.xtlsConfigInbounds, inboundTag)
-	}
+
 }
 
 func (s *StateManager) GetXtlsConfigInbounds() []string {
@@ -182,4 +181,21 @@ func (s *StateManager) cleanupLocked() {
 	s.xtlsConfigInbounds = make(map[string]struct{})
 	s.xrayConfig = nil
 	s.emptyConfigHash = ""
+}
+
+func cloneConfig(in map[string]interface{}) map[string]interface{} {
+	if in == nil {
+		return nil
+	}
+	b, _ := json.Marshal(in)
+	var out map[string]interface{}
+	_ = json.Unmarshal(b, &out)
+	return out
+}
+func (s *StateManager) Invalidate() { s.mu.Lock(); defer s.mu.Unlock(); s.emptyConfigHash = "" }
+
+func (s *StateManager) HasConfig() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.xrayConfig != nil
 }

@@ -1,8 +1,6 @@
 package xray
 
 import (
-	"encoding/json"
-	"os/exec"
 	"context"
 	"fmt"
 	"net"
@@ -10,8 +8,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/remnawave/node-go/internal/config"
+	statscommand "github.com/remnawave/node-go/internal/xrayapi"
+	hysteria "github.com/remnawave/node-go/internal/xrayapi/hysteria"
 	proxymancommand "github.com/xtls/xray-core/app/proxyman/command"
-	statscommand "github.com/xtls/xray-core/app/stats/command"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/proxy/shadowsocks"
@@ -47,41 +47,19 @@ func (c *Client) connect(ctx context.Context) error {
 		return nil
 	}
 
-	dialAddr := c.socketPath
-	if dialAddr == "" || !strings.Contains(dialAddr, ":") {
-		dialAddr = "127.0.0.1:62085"
-	}
-
-	var conn *grpc.ClientConn
-	var err error
-
-	if strings.Contains(dialAddr, ":") {
-		conn, err = grpc.DialContext(
-			ctx,
-			dialAddr,
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(100*1024*1024)),
-		)
-	} else {
-		dialer := func(ctx context.Context, _ string) (net.Conn, error) {
-			d := net.Dialer{Timeout: 5 * time.Second}
-			conn, err := d.DialContext(ctx, "unix", "@"+c.socketPath)
-			if err == nil {
-				return conn, nil
-			}
-			return d.DialContext(ctx, "unix", c.socketPath)
-		}
-		conn, err = grpc.DialContext(
-			ctx,
-			"passthrough:///unix",
-			grpc.WithContextDialer(dialer),
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(100*1024*1024)),
-		)
-	}
-
+	network, address, err := config.SocketAddress(c.socketPath)
 	if err != nil {
-		return fmt.Errorf("failed to dial xray gRPC on %s: %w", dialAddr, err)
+		return err
+	}
+	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
+		d := net.Dialer{Timeout: 5 * time.Second}
+		return d.DialContext(ctx, network, address)
+	}
+	conn, err := grpc.DialContext(ctx, "passthrough:///xray", grpc.WithContextDialer(dialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(100*1024*1024)))
+	if err != nil {
+		return fmt.Errorf("dial xray: %w", err)
 	}
 
 	c.conn = conn
@@ -162,26 +140,8 @@ func (c *Client) AddUser(ctx context.Context, u UserConfig) error {
 		if pw == "" {
 			pw = u.UUID
 		}
-		buf := make([]byte, 0, len(pw)+2)
-		buf = append(buf, 0x0a, byte(len(pw)))
-		buf = append(buf, []byte(pw)...)
-		typedAccount := &serial.TypedMessage{
-			Type:  "xray.proxy.hysteria.account.Account",
-			Value: buf,
-		}
-		user := &protocol.User{
-			Level:   0,
-			Email:   u.Username,
-			Account: typedAccount,
-		}
-		addUserOp := &proxymancommand.AddUserOperation{
-			User: user,
-		}
-		_, err = handler.AlterInbound(ctx, &proxymancommand.AlterInboundRequest{
-			Tag:       u.Tag,
-			Operation: serial.ToTypedMessage(addUserOp),
-		})
-		return err
+		account = &hysteria.Account{Auth: pw}
+
 	default:
 		return fmt.Errorf("unsupported user type: %s", u.Type)
 	}
@@ -218,6 +178,9 @@ func (c *Client) RemoveUser(ctx context.Context, tag string, username string) er
 		Tag:       tag,
 		Operation: serial.ToTypedMessage(removeUserOp),
 	})
+	if status.Code(err) == codes.Unknown && strings.Contains(status.Convert(err).Message(), "User ") && strings.Contains(status.Convert(err).Message(), " not found.") {
+		return status.Error(codes.NotFound, "user not found")
+	}
 	return err
 }
 
@@ -439,7 +402,7 @@ func (c *Client) GetUserOnlineStatus(ctx context.Context, username string) (bool
 		return false, err
 	}
 
-	res, err := stats.GetStats(ctx, &statscommand.GetStatsRequest{
+	res, err := stats.GetStatsOnline(ctx, &statscommand.GetStatsRequest{
 		Name:   fmt.Sprintf("user>>>%s>>>online", username),
 		Reset_: false,
 	})
@@ -458,61 +421,58 @@ type UserIPSeen struct {
 	LastSeen time.Time `json:"lastSeen"`
 }
 
-// getStatsOnlineIPList attempts custom xtls call for online ips
 func (c *Client) GetStatsOnlineIPList(ctx context.Context, username string, reset bool) ([]UserIPSeen, error) {
-	corePath := FindCorePath(false)
-	if corePath == "" {
-		corePath = "rw-core"
-	}
-	apiAddr := c.socketPath
-	if apiAddr == "" || !strings.Contains(apiAddr, ":") {
-		apiAddr = "127.0.0.1:62085"
-	}
-
-	cmd := exec.CommandContext(ctx, corePath, "api", "statsonlineiplist", "--server="+apiAddr, "-email", username)
-	out, err := cmd.Output()
+	_, stats, _, err := c.getClients()
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
-
-	var res struct {
-		IPs map[string]int64 `json:"ips"`
+	res, err := stats.GetStatsOnlineIpList(ctx, &statscommand.GetStatsRequest{Name: "user>>>" + username + ">>>online", Reset_: reset})
+	if status.Code(err) == codes.NotFound {
+		return []UserIPSeen{}, nil
 	}
-	if err := json.Unmarshal(out, &res); err != nil {
-		return nil, nil
+	if err != nil {
+		return nil, err
 	}
-
-	var result []UserIPSeen
-	for ip, ts := range res.IPs {
-		result = append(result, UserIPSeen{
-			IP:       ip,
-			LastSeen: time.Unix(ts, 0).UTC(),
-		})
+	result := make([]UserIPSeen, 0, len(res.Ips))
+	for ip, ts := range res.Ips {
+		result = append(result, UserIPSeen{IP: ip, LastSeen: time.Unix(ts, 0).UTC()})
 	}
 	return result, nil
 }
 
-func (c *Client) GetAllOnlineUsers(ctx context.Context) ([]string, error) {
-	corePath := FindCorePath(false)
-	if corePath == "" {
-		corePath = "rw-core"
-	}
-	apiAddr := c.socketPath
-	if apiAddr == "" || !strings.Contains(apiAddr, ":") {
-		apiAddr = "127.0.0.1:62085"
-	}
+type OnlineUser struct {
+	UserID string       `json:"userId"`
+	IPs    []UserIPSeen `json:"ips"`
+}
 
-	cmd := exec.CommandContext(ctx, corePath, "api", "statsgetallonlineusers", "--server="+apiAddr)
-	out, err := cmd.Output()
+func (c *Client) GetUsersIPList(ctx context.Context) ([]OnlineUser, error) {
+	_, stats, _, err := c.getClients()
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
+	res, err := stats.GetUsersStats(ctx, &statscommand.GetUsersStatsRequest{})
+	if err != nil {
+		return nil, err
+	}
+	users := make([]OnlineUser, 0, len(res.Users))
+	for _, u := range res.Users {
+		ips := make([]UserIPSeen, 0, len(u.Ips))
+		for _, entry := range u.Ips {
+			ips = append(ips, UserIPSeen{IP: entry.Ip, LastSeen: time.Unix(entry.LastSeen, 0).UTC()})
+		}
+		users = append(users, OnlineUser{UserID: u.Email, IPs: ips})
+	}
+	return users, nil
+}
 
-	var res struct {
-		Users []string `json:"users"`
+func (c *Client) GetAllOnlineUsers(ctx context.Context) ([]string, error) {
+	_, stats, _, err := c.getClients()
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(out, &res); err != nil {
-		return nil, nil
+	res, err := stats.GetAllOnlineUsers(ctx, &statscommand.GetAllOnlineUsersRequest{})
+	if err != nil {
+		return nil, err
 	}
 	return res.Users, nil
 }

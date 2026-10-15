@@ -3,8 +3,10 @@ module github.com/remnawave/node-go
 go 1.27.1
 
 require (
+	github.com/andybalholm/brotli v1.1.0
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/klauspost/compress v1.17.8
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/xtls/xray-core v1.8.24
 	golang.org/x/crypto v0.57.0
@@ -13,11 +15,9 @@ require (
 )
 
 require (
-	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/cloudflare/circl v1.4.0 // indirect
 	github.com/dgryski/go-metro v0.0.0-20211217172704-adc40b04c140 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
-	github.com/klauspost/compress v1.17.8 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.7 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/pires/go-proxyproto v0.7.0 // indirect

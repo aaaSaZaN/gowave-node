@@ -1,12 +1,9 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -46,34 +43,12 @@ func RunLogsCLI(logType string, args []string) {
 		}
 	}
 
-	socketPaths := []string{
-		"/var/lib/remnanode/rw-node.sock",
-		"rw-node.sock",
-		"/tmp/rw-node.sock",
-		"/run/remnanode/rw-node.sock",
-		"\x00rw-node.sock",
+	client, token, connectionErr := internalClient()
+	chosenPath := "managed runtime socket"
+	socketPaths := []string{chosenPath}
+	if connectionErr != nil {
+		client = nil
 	}
-
-	var client *http.Client
-	var chosenPath string
-
-	for _, p := range socketPaths {
-		transport := &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "unix", p)
-			},
-		}
-		c := &http.Client{Transport: transport, Timeout: 3 * time.Second}
-		resp, err := c.Get(fmt.Sprintf("http://unix/internal/logs?type=%s&lines=1&format=json", logType))
-		if err == nil {
-			_ = resp.Body.Close()
-			client = c
-			chosenPath = p
-			break
-		}
-	}
-
 	if client == nil {
 		if logType == "xray" {
 			logPaths := []string{"/var/log/xray/current", "/var/log/xray.log"}
@@ -104,12 +79,15 @@ func RunLogsCLI(logType string, args []string) {
 	seen := make(map[string]struct{})
 
 	fetch := func(count int) ([]string, error) {
-		url := fmt.Sprintf("http://unix/internal/logs?type=%s&lines=%d&format=json", logType, count)
+		url := fmt.Sprintf("http://unix/internal/logs?type=%s&lines=%d&format=json&token=%s", logType, count, token)
 		resp, err := client.Get(url)
 		if err != nil {
 			return nil, err
 		}
 		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return nil, fmt.Errorf("internal API HTTP %d", resp.StatusCode)
+		}
 
 		var data struct {
 			Response struct {

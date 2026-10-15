@@ -5,3 +5,6 @@ bin/
 *.test
 *.out
 .DS_Store
+.smoke/
+dist/
+__pycache__/

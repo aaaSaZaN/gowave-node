@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -107,12 +108,22 @@ func (tb *TorrentBlockerState) WebhookURL() string {
 func (tb *TorrentBlockerState) IncludeRuleTags() []string {
 	tb.mu.RLock()
 	defer tb.mu.RUnlock()
-	return tb.includeRuleTags
+	return append([]string(nil), tb.includeRuleTags...)
 }
 
 func (tb *TorrentBlockerState) IsIPIgnored(ip string) bool {
 	tb.mu.RLock()
 	defer tb.mu.RUnlock()
+	if a, err := netip.ParseAddr(ip); err == nil {
+		if a.IsLoopback() || a.IsUnspecified() {
+			return true
+		}
+		for raw := range tb.ignoredIPs {
+			if p, err := netip.ParsePrefix(raw); err == nil && p.Contains(a) {
+				return true
+			}
+		}
+	}
 	_, exists := tb.ignoredIPs[ip]
 	return exists
 }
