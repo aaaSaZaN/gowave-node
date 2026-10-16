@@ -4,6 +4,6 @@
 !tests/
 !tests/smoke/
 !tests/smoke/**
-!migrate.sh
+!install.sh
 !scripts/
 !scripts/*.sh

@@ -17,6 +17,11 @@ func RestartNodeProcess() error {
 	var cmd *exec.Cmd
 	if _, err := os.Stat("/run/service/node/supervise/control"); err == nil {
 		cmd = exec.CommandContext(ctx, "/command/s6-svc", "-t", "/run/service/node")
+	} else if _, err := os.Stat("/run/systemd/system"); err == nil {
+		cmd = exec.CommandContext(ctx, "systemctl", "restart", "remnanode")
+	} else if _, err := os.Stat("/etc/init.d/remnanode"); err == nil {
+		// OpenRC and OpenWrt procd services installed by install.sh.
+		cmd = exec.CommandContext(ctx, "/etc/init.d/remnanode", "restart")
 	} else if _, err := exec.LookPath("systemctl"); err == nil {
 		cmd = exec.CommandContext(ctx, "systemctl", "restart", "remnanode")
 	} else {

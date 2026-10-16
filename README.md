@@ -34,22 +34,51 @@ CI runs baseline/latest-stable core tests and isolated native/s6 HTTPS smoke tes
 on amd64 and arm64. ARMv7 and MIPS binaries are cross-built; router deployment is
 not certified by the server smoke tests.
 
-## Install or migrate
+## Install, update, or migrate
 
-Run the reviewed `migrate.sh` as root on a systemd host. Prerequisites are curl,
-Python 3, tar, and sha256sum. The installer verifies published checksums for the
-node, portable ASN index, and geocheck (amd64/arm64), then verifies the selected
-Xray release before installing it.
+One command installs a fresh node, updates a native node, or migrates a Docker
+`remnawave/node` container:
 
-It preserves the existing environment and checks referenced TLS files before
-stopping Docker. Referenced container paths must exist at the same locations on
-the native host. It waits up to 120 seconds for the panel to send configuration
-and Xray to become ready. Failure restores Docker and its previous restart
-policy. The old container is retained. Migration interrupts existing connections;
-downtime depends on panel synchronization and is measured rather than assumed.
+```sh
+curl -fsSL https://raw.githubusercontent.com/aaaSaZaN/remnanode-go/main/install.sh | sudo sh
+```
 
-To canary a published candidate, run `REMNANODE_VERSION=v1.0.6-rc.1 bash migrate.sh`.
-An unavailable explicitly selected tag fails without switching services.
+Without curl, use `wget -qO- <same URL> | sudo sh`. Releases also publish the
+script as the `install.sh` asset, listed in `checksums.txt`.
+
+`install.sh` is POSIX sh (bash, dash, and BusyBox ash). It needs curl or wget and
+sha256sum, shasum, or openssl; no Python or bash is required. It detects:
+
+- the architecture: amd64, 386, arm64, armv7, mips, mipsle, mips64, or mips64le.
+  MIPS byte order and 32-bit userlands come from the ELF header of `/bin/sh`;
+- the service manager: systemd, OpenRC (Alpine), or OpenWrt procd. Override it
+  with `REMNANODE_INIT=systemd|openrc|procd`;
+- a Docker container running `remnawave/node`. Its environment becomes the native
+  `.env`.
+
+A fresh install asks for `SECRET_KEY` and `NODE_PORT` (default `3000`) on the
+terminal, even through `curl | sh`. For unattended runs, pass them:
+`curl -fsSL ... | sudo SECRET_KEY=... NODE_PORT=2222 sh`. An existing `.env` or
+container keeps its values.
+
+The installer verifies published checksums for the node, the portable ASN index
+(when the release has one), and geocheck (amd64/arm64). `remnanode core install`
+then installs the latest stable Xray and verifies its release checksum. All
+downloads and checks happen before services change.
+
+For a migration, the installer checks that TLS files referenced by the running
+configuration exist on the host before it stops Docker. Referenced container
+paths must exist at the same locations on the host. It waits up to 120 seconds
+for the panel to send configuration and Xray to become ready. Failure restores
+the previous native service or Docker container, including its restart policy.
+The old container is retained. Migration interrupts existing connections;
+downtime depends on panel synchronization and is measured rather than assumed. A
+fresh install that the panel has not configured yet stays installed and reports
+that it is waiting for the panel.
+
+To canary a published candidate, run
+`curl -fsSL ... | sudo REMNANODE_VERSION=v1.0.6-rc.1 sh`. An unavailable explicitly
+selected tag fails without switching services.
 
 Candidate assets must include `checksums.txt`, `asn-prefixes.zip`, and the matching
 `remnanode-linux-<architecture>` binary. The Candidate artifacts workflow builds
@@ -127,7 +156,7 @@ remnanode core reset
 ```
 
 CLI logs and status use the private discovery file, so run them as the service
-user. Add PATH symlinks explicitly or use those installed by `migrate.sh`;
+user. Add PATH symlinks explicitly or use those installed by `install.sh`;
 executing the binary does not overwrite system binaries or links.
 
 Node updates default to `aaaSaZaN/remnanode-go`. Core installs default to the

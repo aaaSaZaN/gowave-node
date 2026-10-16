@@ -20,7 +20,7 @@ Run from the repository root with the Go version in `go.mod` (currently 1.27.1).
 CGO_ENABLED=0 go build -trimpath -o remnanode ./cmd/remnanode
 go test -race ./...
 go vet ./...
-shellcheck migrate.sh scripts/*.sh
+shellcheck install.sh scripts/*.sh
 python3 tests/test_scripts.py
 ```
 
@@ -149,9 +149,11 @@ candidate. `.smoke/`, `dist/`, and root build outputs are ignored artifacts.
 - Firewall enforcement needs `nft`, iproute2 `ss`, and CAP_NET_ADMIN; geocheck
   needs `/usr/local/bin/geocheck`. Missing capabilities are error cases. Smoke
   containers drop all capabilities and do not certify real firewall enforcement.
-- `migrate.sh` is a root/systemd installer that can stop Docker and change host
-  services. Its tests mock host commands and redirect install paths into temporary
-  directories; use `python3 tests/test_scripts.py` for installer changes.
+- `install.sh` is the single root installer/updater/migrator for systemd, OpenRC,
+  and OpenWrt procd. It is POSIX sh and must keep working under BusyBox ash and
+  dash with only curl/wget and a SHA-256 tool. It can stop Docker and change
+  host services. Its tests mock host commands and redirect install paths into
+  temporary directories; use `python3 tests/test_scripts.py` for installer changes.
 - Explicit release versions must never silently fall back to another tag.
   Preserve checksum verification, executable validation, target locking, backups,
   and readiness rollback. Native HTTP updates schedule a separate systemd
@@ -197,10 +199,9 @@ produce identical assets:
 
 - `artifacts.yml` produces candidate binaries, `asn-prefixes.zip`, and
   `checksums.txt`; it embeds the input version through `main.AppVersion`.
-- `release.yml` publishes binaries and `sha256sums.txt`, currently omitting the
-  ASN ZIP. `migrate.sh` explicitly downloads `checksums.txt` and
-  `asn-prefixes.zip`, so the current release workflow alone does not produce the
-  installer asset set described by the README.
-- The release workflow sets `GOMIPS=softfloat` for mips/mipsle; the candidate
-  workflow currently does not. Both label GOARCH=arm builds as `armv7` with
-  GOARM=7. CI server smoke tests cover amd64/arm64, not router deployment.
+- `release.yml` also builds the ASN ZIP and publishes `install.sh`,
+  `checksums.txt`, and the legacy `sha256sums.txt` copy. `install.sh` accepts
+  either manifest and treats a missing ASN ZIP as optional.
+- Both workflows set `GOMIPS=softfloat` for mips/mipsle, build `386`, and label
+  GOARCH=arm builds as `armv7` with GOARM=7. CI server smoke tests cover
+  amd64/arm64, not router deployment.
