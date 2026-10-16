@@ -1,0 +1,36 @@
+name: Candidate artifacts
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Candidate version embedded in the executable
+        required: true
+        default: 1.0.6-rc.1
+permissions:
+  contents: read
+jobs:
+  binaries:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -race ./...
+      - env:
+          BUILD_VERSION: ${{ inputs.version }}
+        run: |
+          case "$BUILD_VERSION" in *[!a-zA-Z0-9.+-]*|'') exit 1 ;; esac
+          mkdir -p dist
+          for arch in amd64 arm64 arm mips mipsle mips64 mips64le; do
+            asset_arch=$arch
+            if [ "$arch" = arm ]; then asset_arch=armv7; fi
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" GOARM=7 go build -trimpath -ldflags="-s -w -X main.AppVersion=$BUILD_VERSION" -o "dist/remnanode-linux-$asset_arch" ./cmd/remnanode
+          done
+      - run: sudo apt-get update && sudo apt-get install -y zstd
+      - run: bash scripts/build-asn.sh dist/asn-prefixes.zip
+      - run: cd dist && sha256sum remnanode-* asn-prefixes.zip > checksums.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate
+          path: dist/

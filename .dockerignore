@@ -1,0 +1,9 @@
+**
+!.smoke/
+!.smoke/**
+!tests/
+!tests/smoke/
+!tests/smoke/**
+!migrate.sh
+!scripts/
+!scripts/*.sh

@@ -1,260 +1,238 @@
 package xray
 
 import (
-	"os"
-	"path/filepath"
-	"strings"
 	"context"
 	"encoding/json"
+	"errors"
+	"github.com/remnawave/node-go/internal/apiutil"
+	"github.com/remnawave/node-go/internal/updater"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/remnawave/node-go/internal/config"
+	"github.com/remnawave/node-go/internal/integration"
 )
 
 type PluginInterface interface {
-	RunPreStart()
-	Reset()
+	RunPreStart() error
+	Reset() error
+	TorrentConfig() (bool, []string, int, string)
+	RunPostStart(map[string]interface{})
 }
-
-type StatsInterface interface {
-	GetCombined() interface{}
-}
-
 type Controller struct {
+	integrations            *integration.Manager
 	mu                      sync.Mutex
 	cfg                     *config.Config
 	state                   *StateManager
 	process                 *ProcessManager
 	client                  *Client
 	plugin                  PluginInterface
-	statsPoller             interface{}
 	systemStatsGetter       func() interface{}
 	isXrayOnline            bool
 	isXrayStartedProcessing bool
 	xrayVersion             *string
 	nodeVersion             string
+	pluginRevision          string
 }
 
-func NewController(
-	cfg *config.Config,
-	state *StateManager,
-	process *ProcessManager,
-	client *Client,
-	plugin PluginInterface,
-	systemStatsGetter func() interface{},
-) *Controller {
-	c := &Controller{
-		cfg:               cfg,
-		state:             state,
-		process:           process,
-		client:            client,
-		plugin:            plugin,
-		systemStatsGetter: systemStatsGetter,
-		nodeVersion:       "1.0.5",
+func NewController(cfg *config.Config, state *StateManager, process *ProcessManager, client *Client, plugin PluginInterface, systemStatsGetter func() interface{}, nodeVersion string) *Controller {
+	c := &Controller{integrations: integration.New(), cfg: cfg, state: state, process: process, client: client, plugin: plugin, systemStatsGetter: systemStatsGetter, nodeVersion: nodeVersion}
+	if version, err := process.GetCoreVersion(); err == nil {
+		c.xrayVersion = &version
 	}
-
-	if ver, err := process.GetCoreVersion(); err == nil && ver != "" {
-		c.xrayVersion = &ver
-	}
-
 	return c
 }
 
 type StartXrayRequest struct {
 	Internals struct {
-		ForceRestart bool       `json:"forceRestart"`
-		Hashes       HashesInfo `json:"hashes"`
+		ForceRestart bool                   `json:"forceRestart"`
+		Hashes       HashesInfo             `json:"hashes"`
+		Metadata     map[string]interface{} `json:"metadata"`
+		Integrations map[string]interface{} `json:"integrations"`
 	} `json:"internals"`
 	XrayConfig map[string]interface{} `json:"xrayConfig"`
 }
 
+func (req *StartXrayRequest) Validate() error {
+	if req.XrayConfig == nil || req.Internals.Hashes.EmptyConfig == "" || req.Internals.Hashes.Inbounds == nil {
+		return errors.New("xrayConfig and internals.hashes are required")
+	}
+	tags := map[string]bool{}
+	for _, inbound := range req.Internals.Hashes.Inbounds {
+		if inbound.Tag == "" || inbound.Hash == "" || inbound.UsersCount < 0 || tags[inbound.Tag] {
+			return errors.New("invalid inbound hash")
+		}
+		tags[inbound.Tag] = true
+	}
+	return nil
+}
+func (c *Controller) startResponse(w http.ResponseWriter, started bool, err error) {
+	c.mu.Lock()
+	version := c.xrayVersion
+	c.mu.Unlock()
+	var message interface{}
+	if err != nil {
+		message = err.Error()
+	}
+	writeJSON(w, 200, map[string]interface{}{"response": map[string]interface{}{"isStarted": started, "version": version, "error": message, "nodeInformation": map[string]string{"version": c.nodeVersion}, "system": c.systemStatsGetter()}})
+}
 func (c *Controller) HandleStart(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	if c.isXrayStartedProcessing {
 		c.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"response": map[string]interface{}{
-				"isStarted":       false,
-				"version":         c.xrayVersion,
-				"error":           "Request already in progress",
-				"nodeInformation": map[string]interface{}{"version": c.nodeVersion},
-				"system":          c.systemStatsGetter(),
-			},
-		})
+		c.startResponse(w, false, errors.New("Request already in progress"))
 		return
 	}
 	c.isXrayStartedProcessing = true
 	c.mu.Unlock()
-
-	defer func() {
-		c.mu.Lock()
-		c.isXrayStartedProcessing = false
-		c.mu.Unlock()
-	}()
-
+	defer func() { c.mu.Lock(); c.isXrayStartedProcessing = false; c.mu.Unlock() }()
 	var req StartXrayRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"response": map[string]interface{}{
-				"isStarted":       false,
-				"version":         c.xrayVersion,
-				"error":           "Invalid request body",
-				"nodeInformation": map[string]interface{}{"version": c.nodeVersion},
-				"system":          c.systemStatsGetter(),
-			},
-		})
+	if err := apiutil.Decode(r, &req); err != nil {
+		apiutil.Error(w, r, 400, "E000", err)
 		return
 	}
-
-	// check if restart needed
-	if c.isXrayOnline && !c.cfg.DisableHashedSetCheck && !req.Internals.ForceRestart {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	c.state.Operation.Lock()
+	defer c.state.Operation.Unlock()
+	if err := r.Context().Err(); err != nil {
+		apiutil.Error(w, r, 408, "E000", err)
+		return
+	}
+	if err := c.integrations.Sync(r.Context(), req.Internals.Integrations, req.Internals.Metadata); err != nil {
+		c.startResponse(w, false, err)
+		return
+	}
+	enabled, tags, position, revision := c.plugin.TorrentConfig()
+	c.mu.Lock()
+	online := c.isXrayOnline
+	oldRevision := c.pluginRevision
+	c.mu.Unlock()
+	if online && !c.cfg.DisableHashedSetCheck && !req.Internals.ForceRestart && oldRevision == revision {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		_, err := c.client.GetSysStats(ctx)
 		cancel()
-
-		if err == nil {
-			if !c.state.IsNeedRestartCore(req.Internals.Hashes) {
-				writeJSON(w, http.StatusOK, map[string]interface{}{
-					"response": map[string]interface{}{
-						"isStarted":       true,
-						"version":         c.xrayVersion,
-						"error":           nil,
-						"nodeInformation": map[string]interface{}{"version": c.nodeVersion},
-						"system":          c.systemStatsGetter(),
-					},
-				})
-				return
-			}
+		if err == nil && !c.state.IsNeedRestartCore(req.Internals.Hashes) {
+			c.startResponse(w, true, nil)
+			return
 		}
 	}
-
-	// prepare config
-	tbState := TorrentBlockerState{
-		Enabled: false,
-	}
-	// check plugin torrent blocker if enabled
-	internalCfg := InternalConfig{
-		SocketPath:        c.cfg.InternalSocketPath,
-		Token:             c.cfg.InternalRestToken,
-		XtlsApiSocketPath: c.cfg.XtlsApiSocketPath,
-	}
-
-	fullConfig := GenerateApiConfig(req.XrayConfig, tbState, internalCfg, true)
-	c.state.ExtractUsersFromConfig(req.Internals.Hashes, fullConfig)
-
-	// pre-start socket cleanup
-	c.plugin.RunPreStart()
-	cleanupInboundSockets(fullConfig)
-
-	// stop & start xray
-	_ = c.process.Stop()
-	c.client.Close()
-	if err := c.process.Start(fullConfig); err != nil {
-		log.Printf("[XRAY] Failed to start xray: %v", err)
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"response": map[string]interface{}{
-				"isStarted":       false,
-				"version":         nil,
-				"error":           err.Error(),
-				"nodeInformation": map[string]interface{}{"version": c.nodeVersion},
-				"system":          c.systemStatsGetter(),
-			},
-		})
+	if err := c.process.Prepare(r.Context(), req.XrayConfig["geodata"]); err != nil {
+		c.startResponse(w, false, err)
 		return
 	}
-
-	// wait for xray to become ready
-	started := false
-	for attempt := 0; attempt < 30; attempt++ {
-		time.Sleep(300 * time.Millisecond)
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-		_, err := c.client.GetSysStats(ctx)
-		cancel()
+	full := GenerateApiConfig(req.XrayConfig, TorrentBlockerState{Enabled: enabled, IncludeRuleTags: tags, RulePosition: position}, InternalConfig{SocketPath: c.cfg.InternalSocketPath, Token: c.cfg.InternalRestToken, XtlsApiSocketPath: c.cfg.XtlsApiSocketPath}, updater.HasNetAdmin())
+	if err := c.process.ValidateConfig(r.Context(), full); err != nil {
+		c.startResponse(w, false, err)
+		return
+	}
+	if err := c.process.Stop(); err != nil {
+		c.startResponse(w, false, err)
+		return
+	}
+	c.mu.Lock()
+	c.isXrayOnline = false
+	c.mu.Unlock()
+	c.client.Close()
+	if err := c.plugin.RunPreStart(); err != nil {
+		c.startResponse(w, false, err)
+		return
+	}
+	if err := cleanupInboundSockets(full); err != nil {
+		c.startResponse(w, false, err)
+		return
+	}
+	c.state.ExtractUsersFromConfig(req.Internals.Hashes, full)
+	if err := c.process.Start(full); err != nil {
+		if stopErr := c.process.Stop(); stopErr != nil {
+			c.startResponse(w, false, errors.Join(err, stopErr))
+			return
+		}
+		c.state.Cleanup()
+		if rollbackErr := c.process.RollbackActivation(); rollbackErr != nil {
+			log.Printf("[XRAY] rollback: %v", rollbackErr)
+		}
+		c.startResponse(w, false, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		call, cancelCall := context.WithTimeout(ctx, time.Second)
+		_, err := c.client.GetSysStats(call)
+		cancelCall()
 		if err == nil {
-			started = true
 			break
 		}
-		c.client.Close()
+		if !c.process.GetStatus().Up {
+			_ = c.process.Stop()
+			c.state.Invalidate()
+			_ = c.process.RollbackActivation()
+			c.startResponse(w, false, errors.New("Xray Core exited before becoming ready"))
+			return
+		}
+		select {
+		case <-ctx.Done():
+			_ = c.process.Stop()
+			c.state.Invalidate()
+			_ = c.process.RollbackActivation()
+			c.startResponse(w, false, ctx.Err())
+			return
+		case <-ticker.C:
+		}
 	}
-
+	version, err := c.process.GetCoreVersion()
 	c.mu.Lock()
-	c.isXrayOnline = started
-	if ver, err := c.process.GetCoreVersion(); err == nil && ver != "" {
-		c.xrayVersion = &ver
+	c.isXrayOnline = true
+	c.pluginRevision = revision
+	if err == nil {
+		c.xrayVersion = &version
 	}
 	c.mu.Unlock()
-
-	if !started {
-		log.Println("[XRAY] Core did not become ready in time")
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"response": map[string]interface{}{
-				"isStarted":       false,
-				"version":         c.xrayVersion,
-				"error":           "Xray Core did not become ready in time",
-				"nodeInformation": map[string]interface{}{"version": c.nodeVersion},
-				"system":          c.systemStatsGetter(),
-			},
-		})
+	c.process.CommitActivation()
+	c.plugin.RunPostStart(req.Internals.Metadata)
+	c.startResponse(w, true, nil)
+}
+func (c *Controller) HandleStop(w http.ResponseWriter, r *http.Request) {
+	c.state.Operation.Lock()
+	defer c.state.Operation.Unlock()
+	if err := r.Context().Err(); err != nil {
+		apiutil.Error(w, r, 408, "E000", err)
 		return
 	}
-
-	log.Printf("[XRAY] ✔ Xray Core is up and running.")
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"response": map[string]interface{}{
-			"isStarted":       true,
-			"version":         c.xrayVersion,
-			"error":           nil,
-			"nodeInformation": map[string]interface{}{"version": c.nodeVersion},
-			"system":          c.systemStatsGetter(),
-		},
-	})
+	err := c.process.Stop()
+	if err == nil {
+		err = c.integrations.Stop(r.Context())
+	}
+	if err == nil {
+		err = c.plugin.Reset()
+	}
+	if err == nil {
+		c.client.Close()
+		c.state.Cleanup()
+		c.mu.Lock()
+		c.isXrayOnline = false
+		c.mu.Unlock()
+	}
+	writeJSON(w, 200, map[string]interface{}{"response": map[string]bool{"isStopped": err == nil}})
 }
-
-func (c *Controller) HandleStop(w http.ResponseWriter, r *http.Request) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.plugin.Reset()
-	_ = c.process.Stop()
+func (c *Controller) Invalidate() {
+	// Called while the shared operation gate is held by plugin synchronization.
+	if err := c.process.Stop(); err != nil {
+		log.Printf("[XRAY] plugin restart: %v", err)
+	}
 	c.client.Close()
+	c.state.Invalidate()
+	c.mu.Lock()
 	c.isXrayOnline = false
-	c.state.Cleanup()
-
-	log.Println("[XRAY] Stopped Xray process.")
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"response": map[string]interface{}{
-			"isStopped": true,
-		},
-	})
+	c.mu.Unlock()
 }
 
-func (c *Controller) isCustomCore() bool {
-	if os.Getenv("CUSTOM_CORE") == "true" || os.Getenv("IS_CUSTOM_CORE") == "true" {
-		return true
-	}
-	if _, err := os.Stat("/usr/local/bin/xray-custom"); err == nil {
-		return true
-	}
-	if _, err := os.Stat("/usr/local/bin/.rw-core.json"); err == nil {
-		return true
-	}
-	if exe, err := os.Executable(); err == nil {
-		marker := filepath.Join(filepath.Dir(exe), ".rw-core.json")
-		if _, err := os.Stat(marker); err == nil {
-			return true
-		}
-	}
-	if c.xrayVersion != nil {
-		v := strings.ToLower(*c.xrayVersion)
-		if strings.Contains(v, "custom") || strings.Contains(v, "mod") {
-			return true
-		}
-	}
-	return false
-}
+func (c *Controller) isCustomCore() bool { return c.process.IsCustom() }
 
 func (c *Controller) HandleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
@@ -263,7 +241,7 @@ func (c *Controller) HandleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"response": map[string]interface{}{
 			"isAlive":                  true,
-			"xrayInternalStatusCached": c.isXrayOnline,
+			"xrayInternalStatusCached": c.isXrayOnline && c.process.GetStatus().Up,
 			"xrayVersion":              c.xrayVersion,
 			"nodeVersion":              c.nodeVersion,
 			"nodeType":                 "go",
@@ -292,37 +270,39 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	_ = json.NewEncoder(w).Encode(data)
 }
 
-func cleanupInboundSockets(cfg map[string]interface{}) {
-	inbounds, ok := cfg["inbounds"].([]interface{})
-	if !ok {
-		return
-	}
-	for _, rawInb := range inbounds {
-		inbMap, ok := rawInb.(map[string]interface{})
+func cleanupInboundSockets(cfg map[string]interface{}) error {
+	inbounds, _ := cfg["inbounds"].([]interface{})
+	for _, raw := range inbounds {
+		inbound, ok := raw.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		streamSettings, ok := inbMap["streamSettings"].(map[string]interface{})
-		if !ok {
-			continue
+		paths := []string{}
+		if listen, ok := inbound["listen"].(string); ok && strings.HasPrefix(listen, "/") {
+			paths = append(paths, listen)
 		}
-		if ds, ok := streamSettings["dsSettings"].(map[string]interface{}); ok {
-			if p, ok := ds["path"].(string); ok && p != "" {
-				_ = os.Remove(p)
-				log.Printf("[XRAY] Pre-start cleaned domain socket: %s", p)
+		if stream, ok := inbound["streamSettings"].(map[string]interface{}); ok {
+			if ds, ok := stream["dsSettings"].(map[string]interface{}); ok {
+				if path, ok := ds["path"].(string); ok {
+					paths = append(paths, path)
+				}
 			}
 		}
-		if sh, ok := streamSettings["splithttpSettings"].(map[string]interface{}); ok {
-			if p, ok := sh["path"].(string); ok && strings.HasPrefix(p, "/") {
-				_ = os.Remove(p)
-				log.Printf("[XRAY] Pre-start cleaned splithttp socket: %s", p)
+		for _, path := range paths {
+			info, err := os.Lstat(path)
+			if os.IsNotExist(err) {
+				continue
 			}
-		}
-		if xh, ok := streamSettings["xhttpSettings"].(map[string]interface{}); ok {
-			if p, ok := xh["path"].(string); ok && strings.HasPrefix(p, "/") {
-				_ = os.Remove(p)
-				log.Printf("[XRAY] Pre-start cleaned xhttp socket: %s", p)
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSocket == 0 {
+				continue
+			}
+			if err := os.Remove(path); err != nil {
+				return err
 			}
 		}
 	}
+	return nil
 }

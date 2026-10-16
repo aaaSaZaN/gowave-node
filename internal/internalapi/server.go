@@ -1,6 +1,8 @@
 package internalapi
 
 import (
+	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,8 +10,10 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -56,11 +60,7 @@ func (s *Server) Start() error {
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token := r.URL.Query().Get("token")
-			if r.URL.Path == "/internal/logs" {
-				next.ServeHTTP(w, r)
-				return
-			}
-			if token == "" || token != s.cfg.InternalRestToken {
+			if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.InternalRestToken)) != 1 {
 				http.Error(w, "Forbidden", http.StatusForbidden)
 				return
 			}
@@ -69,23 +69,56 @@ func (s *Server) Start() error {
 	})
 
 	r.Get("/internal/get-config", s.handleGetConfig)
-	r.Post("/internal/webhook", s.handleWebhook)
+	r.Post("/internal/webhook", s.HandleWebhook)
 	r.Get("/internal/logs", s.handleLogs)
-
-	addr := "\x00" + s.cfg.InternalSocketPath
-	l, err := net.Listen("unix", addr)
-	if err != nil {
-		addr = s.cfg.InternalSocketPath
-		_ = os.Remove(addr)
-		l, err = net.Listen("unix", addr)
-		if err != nil {
-			return fmt.Errorf("failed to listen on internal socket: %w", err)
+	r.Get("/internal/ready", func(w http.ResponseWriter, r *http.Request) {
+		if !s.state.HasConfig() || !s.procMgr.GetStatus().Up {
+			w.WriteHeader(503)
+			return
 		}
+		client := xray.NewClient(s.cfg.XtlsApiSocketPath)
+		defer client.Close()
+		ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+		defer cancel()
+		if _, err := client.GetSysStats(ctx); err != nil {
+			w.WriteHeader(503)
+			return
+		}
+		w.WriteHeader(200)
+	})
+
+	network, addr, err := config.SocketAddress(s.cfg.InternalSocketPath)
+	if err != nil {
+		return err
+	}
+	if network == "unix" && filepath.IsAbs(addr) {
+		if info, err := os.Lstat(addr); err == nil && info.Mode()&os.ModeSocket != 0 {
+			if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) == os.Geteuid() {
+				conn, dialErr := net.DialTimeout("unix", addr, time.Second)
+				if dialErr == nil {
+					conn.Close()
+					return fmt.Errorf("internal socket is already active")
+				}
+				if err := os.Remove(addr); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	l, err := net.Listen(network, addr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on internal socket: %w", err)
+	}
+	if err := config.SaveDiscovery(s.cfg); err != nil {
+		l.Close()
+		return err
 	}
 	s.listener = l
 
 	s.httpServer = &http.Server{
-		Handler: r,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {
@@ -99,6 +132,9 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Stop() {
+	if d, err := config.ReadDiscovery(); err == nil && d.PID == os.Getpid() {
+		_ = os.Remove(filepath.Join(config.RuntimeDir(), "connection.json"))
+	}
 	if s.httpServer != nil {
 		_ = s.httpServer.Close()
 	}
@@ -160,7 +196,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
+func (s *Server) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	var webhook plugin.XrayWebhookModel
 	if err := json.NewDecoder(r.Body).Decode(&webhook); err != nil {
 		log.Printf("[INTERNAL-API] Invalid webhook body: %v", err)
@@ -227,7 +263,7 @@ func (s *Server) processWebhook(webhook plugin.XrayWebhookModel) {
 		}
 	}
 
-	plugin.KillSockets([]string{ip})
+	s.plugin.DropConnections([]string{ip})
 
 	report := plugin.TorrentBlockerReport{
 		ActionReport: plugin.ActionReport{

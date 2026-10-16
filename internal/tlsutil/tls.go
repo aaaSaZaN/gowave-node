@@ -31,11 +31,11 @@ func SetupServerTLS(cfg *config.Config) (*tls.Config, error) {
 	}
 
 	if cfg.SniVerification {
-		tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		tlsConfig.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 			if !sniVerifier(hello.ServerName) {
 				return nil, errors.New("unknown sni")
 			}
-			return &cert, nil
+			return nil, nil
 		}
 	}
 

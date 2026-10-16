@@ -1,0 +1,40 @@
+name: Validation
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '21 4 * * 1'
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: shellcheck migrate.sh scripts/*.sh
+      - run: python3 tests/test_scripts.py
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        core: [v26.7.28, latest]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: python3 scripts/fetch-test-core.py '${{ matrix.core }}' .smoke
+      - run: REMNANODE_TEST_CORE="$PWD/.smoke/rw-core" go test -race ./internal/xray -run RealCore -v
+      - run: CGO_ENABLED=0 go build -o .smoke/remnanode ./cmd/remnanode
+      - run: docker build -f tests/smoke/Dockerfile -t remnanode-smoke .
+      - run: docker run --rm --cap-drop=ALL remnanode-smoke native
+      - run: docker run --rm --cap-drop=ALL remnanode-smoke s6

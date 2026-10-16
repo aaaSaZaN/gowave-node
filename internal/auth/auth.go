@@ -2,6 +2,7 @@ package auth
 
 import (
 	"crypto/rsa"
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -60,7 +61,7 @@ func (a *AuthManager) JWTMiddleware(next http.Handler) http.Handler {
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
 			return a.rsaPubKey, nil
-		})
+		}, jwt.WithValidMethods([]string{"RS256"}))
 
 		if err != nil || !token.Valid {
 			log.Printf("[AUTH] Invalid JWT token from %s: %v", r.RemoteAddr, err)
@@ -75,7 +76,7 @@ func (a *AuthManager) JWTMiddleware(next http.Handler) http.Handler {
 func (a *AuthManager) InternalTokenMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := r.URL.Query().Get("token")
-		if token == "" || token != a.internalRestToken {
+		if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(a.internalRestToken)) != 1 {
 			log.Printf("[AUTH] Internal token mismatch or missing from %s", r.RemoteAddr)
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return

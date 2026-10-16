@@ -1,15 +1,24 @@
 package plugin
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"github.com/remnawave/node-go/internal/apiutil"
 	"log"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 type SharedListItem struct {
@@ -18,7 +27,16 @@ type SharedListItem struct {
 	Items []interface{} `json:"items"`
 }
 
+type PostStartConfig struct {
+	Enabled bool `json:"enabled"`
+	Webhook *struct {
+		Enabled bool   `json:"enabled"`
+		URL     string `json:"url"`
+	} `json:"webhook"`
+}
+
 type NodePluginConfig struct {
+	PostStart   *PostStartConfig `json:"postStart"`
 	SharedLists []SharedListItem `json:"sharedLists"`
 
 	TorrentBlocker *struct {
@@ -67,6 +85,8 @@ type Service struct {
 	pluginName     string
 	whitelistIPs   map[string]struct{}
 	cleanupFiles   []string
+	postStart      *PostStartConfig
+	resolveASN     func(uint32) ([]string, error)
 }
 
 func NewService(nft *NftManager) *Service {
@@ -78,31 +98,115 @@ func NewService(nft *NftManager) *Service {
 }
 
 func (s *Service) IsWhitelisted(ip string) bool {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false
+	}
+	if a.IsLoopback() || a.IsUnspecified() || ip == "255.255.255.255" {
+		return true
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	_, exists := s.whitelistIPs[ip]
-	return exists
+	if _, ok := s.whitelistIPs[a.String()]; ok {
+		return true
+	}
+	for raw := range s.whitelistIPs {
+		if p, err := netip.ParsePrefix(raw); err == nil && p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+func (s *Service) DropConnections(ips []string) error {
+	filtered := []string{}
+	seen := map[string]bool{}
+	for _, ip := range ips {
+		if !seen[ip] && !s.IsWhitelisted(ip) {
+			filtered = append(filtered, ip)
+			seen[ip] = true
+		}
+	}
+	return KillSockets(filtered)
+}
+func (s *Service) SetASNResolver(resolve func(uint32) ([]string, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resolveASN = resolve
 }
 
-func (s *Service) RunPreStart() {
+func (s *Service) RunPreStart() error {
 	s.mu.RLock()
-	files := s.cleanupFiles
+	files := append([]string(nil), s.cleanupFiles...)
 	s.mu.RUnlock()
-
 	for _, pattern := range files {
 		matches, err := filepath.Glob(pattern)
-		if err != nil || len(matches) == 0 {
-			matches = []string{pattern}
+		if err != nil {
+			return err
+		}
+		if len(matches) > 256 {
+			return fmt.Errorf("socket cleanup pattern exceeds 256 matches: %s", pattern)
 		}
 		for _, file := range matches {
-			if fi, err := os.Lstat(file); err == nil {
-				if fi.Mode()&os.ModeSocket != 0 || !fi.IsDir() {
-					_ = os.Remove(file)
-					log.Printf("[PLUGIN] Pre-Start removed socket/file: %s", file)
-				}
+			fi, err := os.Lstat(file)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if fi.Mode()&os.ModeSocket == 0 {
+				continue
+			}
+			if err := os.Remove(file); err != nil {
+				return err
 			}
 		}
 	}
+	return nil
+}
+
+func (s *Service) TorrentConfig() (bool, []string, int, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	enabled := s.TorrentBlocker.IsEnabled()
+	tags := s.TorrentBlocker.IncludeRuleTags()
+	position := s.TorrentBlocker.RulePlacement()
+	normalized := append([]string{}, tags...)
+	sort.Strings(normalized)
+	data, _ := json.Marshal(struct {
+		Enabled  bool
+		Tags     []string
+		Position int
+	}{enabled, normalized, position})
+	revision := sha256.Sum256(data)
+	return enabled, tags, position, hex.EncodeToString(revision[:])
+}
+func (s *Service) RunPostStart(metadata map[string]interface{}) {
+	s.mu.RLock()
+	post := s.postStart
+	s.mu.RUnlock()
+	if post == nil || !post.Enabled || post.Webhook == nil || !post.Webhook.Enabled {
+		return
+	}
+	if metadata == nil {
+		metadata = map[string]interface{}{}
+	}
+	go func() {
+		data, _ := json.Marshal(map[string]interface{}{"scope": "service", "event": "service.core_started", "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "metadata": metadata})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, "POST", post.Webhook.URL, strings.NewReader(string(data)))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			log.Printf("[POST-START] webhook failed: %v", err)
+			return
+		}
+		res.Body.Close()
+	}()
 }
 
 type SyncRequest struct {
@@ -113,165 +217,197 @@ type SyncRequest struct {
 	} `json:"plugin"`
 }
 
-func (s *Service) Sync(req SyncRequest) (accepted bool) {
+func (s *Service) Sync(req SyncRequest) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	if req.Plugin == nil {
-		if s.pluginUUID != "" {
-			log.Println("[PLUGIN] Received empty plugins, resetting active plugins...")
-			s.resetLocked()
-		}
-		return true
+		return s.resetLocked() == nil
 	}
-
-	configBytes, err := json.Marshal(req.Plugin.Config)
+	data, err := json.Marshal(req.Plugin.Config)
 	if err != nil {
-		log.Printf("[PLUGIN] Failed to serialize plugin config: %v", err)
 		return false
 	}
-
-	h := sha256.Sum256(configBytes)
-	hashStr := hex.EncodeToString(h[:])
-	if hashStr == s.configHash {
-		log.Println("[PLUGIN] Config unchanged. Skipping sync.")
+	hash := sha256.Sum256(data)
+	hashString := hex.EncodeToString(hash[:])
+	if hashString == s.configHash {
 		return true
 	}
-
 	var parsed NodePluginConfig
-	if err := json.Unmarshal(configBytes, &parsed); err != nil {
-		log.Printf("[PLUGIN] Invalid plugin config: %v", err)
-		s.resetLocked()
+	if err = json.Unmarshal(data, &parsed); err != nil {
 		return false
 	}
-
-	// resolve shared lists
-	sharedMap := make(map[string][]string)
-	for _, sl := range parsed.SharedLists {
-		if sl.Type == "ipList" {
-			var ips []string
-			for _, item := range sl.Items {
-				if str, ok := item.(string); ok {
-					ips = append(ips, str)
+	shared := map[string][]string{}
+	for _, list := range parsed.SharedLists {
+		if !strings.HasPrefix(list.Name, "ext:") {
+			return false
+		}
+		switch list.Type {
+		case "ipList":
+			for _, v := range list.Items {
+				ip, ok := v.(string)
+				if !ok {
+					return false
 				}
+				if _, _, err := validateAddress(ip); err != nil {
+					return false
+				}
+				shared[list.Name] = append(shared[list.Name], ip)
 			}
-			sharedMap[sl.Name] = ips
+		case "asList":
+			if s.resolveASN == nil {
+				return false
+			}
+			for _, v := range list.Items {
+				n, ok := v.(float64)
+				if !ok || n < 1 || n > 4294967295 || n != float64(uint32(n)) {
+					return false
+				}
+				prefixes, err := s.resolveASN(uint32(n))
+				if err != nil {
+					log.Printf("[PLUGIN] ASN resolution: %v", err)
+					return false
+				}
+				shared[list.Name] = append(shared[list.Name], prefixes...)
+			}
+		default:
+			return false
+		}
+		if _, ok := shared[list.Name]; !ok {
+			shared[list.Name] = []string{}
 		}
 	}
-
-	resolveIPs := func(in []string) []string {
-		var out []string
+	resolve := func(in []string) ([]string, error) {
+		out := []string{}
 		for _, ip := range in {
 			if strings.HasPrefix(ip, "ext:") {
-				if resolved, ok := sharedMap[ip]; ok {
-					out = append(out, resolved...)
-				} else {
-					log.Printf("[PLUGIN] Warning: shared IP list %s not found", ip)
+				values, ok := shared[ip]
+				if !ok {
+					return nil, fmt.Errorf("unknown shared list %s", ip)
 				}
+				out = append(out, values...)
 			} else {
+				if _, _, err := validateAddress(ip); err != nil {
+					return nil, err
+				}
 				out = append(out, ip)
 			}
 		}
-		return out
+		return out, nil
 	}
-
-	// recreate nftables tables
-	_ = s.NftManager.RecreateTables()
-
-	// connection drop
-	s.whitelistIPs = make(map[string]struct{})
-	if parsed.ConnectionDrop != nil && parsed.ConnectionDrop.Enabled {
-		resolved := resolveIPs(parsed.ConnectionDrop.WhitelistIps)
-		for _, ip := range resolved {
-			s.whitelistIPs[ip] = struct{}{}
+	var ingress, egress, ignored, whitelist []string
+	var ports []int
+	needsFirewall := false
+	if p := parsed.IngressFilter; p != nil && p.Enabled {
+		needsFirewall = true
+		ingress, err = resolve(p.BlockedIps)
+		if err != nil {
+			return false
 		}
-		log.Printf("[PLUGIN] Connection-Drop: %d whitelisted IPs synced", len(resolved))
 	}
-
-	// prestart
-	s.cleanupFiles = nil
-	if parsed.PreStart != nil && parsed.PreStart.Enabled && parsed.PreStart.CleanupSockets != nil && parsed.PreStart.CleanupSockets.Enabled {
-		s.cleanupFiles = parsed.PreStart.CleanupSockets.Files
-		log.Printf("[PLUGIN] Pre-Start: %d cleanup file pattern(s) configured", len(s.cleanupFiles))
-	}
-
-	// ingress filter
-	if parsed.IngressFilter != nil && parsed.IngressFilter.Enabled {
-		resolved := resolveIPs(parsed.IngressFilter.BlockedIps)
-		_ = s.NftManager.AddAddresses(resolved, IngressFilterIPSetName)
-		log.Printf("[PLUGIN] Ingress Filter: %d IPs synced", len(resolved))
-	}
-
-	// egress filter
-	if parsed.EgressFilter != nil && parsed.EgressFilter.Enabled {
-		resolved := resolveIPs(parsed.EgressFilter.BlockedIps)
-		_ = s.NftManager.AddAddresses(resolved, EgressFilterIPSetName)
-		if len(parsed.EgressFilter.BlockedPorts) > 0 {
-			_ = s.NftManager.AddPorts(parsed.EgressFilter.BlockedPorts, EgressFilterPortSetName)
+	if p := parsed.EgressFilter; p != nil && p.Enabled {
+		needsFirewall = true
+		egress, err = resolve(p.BlockedIps)
+		if err != nil {
+			return false
 		}
-		log.Printf("[PLUGIN] Egress Filter: %d IPs, %d ports synced", len(resolved), len(parsed.EgressFilter.BlockedPorts))
+		ports = p.BlockedPorts
 	}
-
-	// torrent blocker
-	if parsed.TorrentBlocker != nil && parsed.TorrentBlocker.Enabled {
-		var ignoredIPs []string
-		var ignoredUsers []string
-		if parsed.TorrentBlocker.IgnoreLists != nil {
-			ignoredIPs = resolveIPs(parsed.TorrentBlocker.IgnoreLists.IP)
-			for _, uid := range parsed.TorrentBlocker.IgnoreLists.UserID {
-				ignoredUsers = append(ignoredUsers, strings.TrimSpace(string(rune(uid))))
+	if p := parsed.ConnectionDrop; p != nil && p.Enabled {
+		whitelist, err = resolve(p.WhitelistIps)
+		if err != nil {
+			return false
+		}
+	}
+	if p := parsed.TorrentBlocker; p != nil && p.Enabled {
+		needsFirewall = true
+		if p.BlockDuration < 0 {
+			return false
+		}
+		if p.IgnoreLists != nil {
+			ignored, err = resolve(p.IgnoreLists.IP)
+			if err != nil {
+				return false
 			}
 		}
-		rulePos := 0
-		if parsed.TorrentBlocker.RulePlacement != nil {
-			rulePos = *parsed.TorrentBlocker.RulePlacement
+		if p.WebhookURL != nil && *p.WebhookURL != "" && !validWebhook(*p.WebhookURL) {
+			return false
 		}
-		webhook := ""
-		if parsed.TorrentBlocker.WebhookURL != nil {
-			webhook = *parsed.TorrentBlocker.WebhookURL
+	}
+	if p := parsed.PostStart; p != nil && p.Enabled && p.Webhook != nil && p.Webhook.Enabled && !validWebhook(p.Webhook.URL) {
+		return false
+	}
+	if _, err := portCommand(ports, EgressFilterPortSetName); err != nil {
+		return false
+	}
+	if needsFirewall && !s.NftManager.IsAvailable() {
+		return false
+	}
+	if s.NftManager.IsAvailable() {
+		if err := s.NftManager.SyncFilters(ingress, egress, ports); err != nil {
+			log.Printf("[PLUGIN] sync: %v", err)
+			return false
 		}
-		s.TorrentBlocker.Configure(
-			true,
-			parsed.TorrentBlocker.BlockDuration,
-			rulePos,
-			webhook,
-			parsed.TorrentBlocker.IncludeRuleTags,
-			ignoredIPs,
-			ignoredUsers,
-		)
-		log.Printf("[PLUGIN] Torrent-Blocker: duration=%ds, %d ignored IPs", parsed.TorrentBlocker.BlockDuration, len(ignoredIPs))
+	}
+	// Publish only after the entire firewall transaction succeeds.
+	s.whitelistIPs = map[string]struct{}{}
+	for _, ip := range whitelist {
+		s.whitelistIPs[ip] = struct{}{}
+	}
+	s.cleanupFiles = nil
+	if p := parsed.PreStart; p != nil && p.Enabled && p.CleanupSockets != nil && p.CleanupSockets.Enabled {
+		s.cleanupFiles = append([]string(nil), p.CleanupSockets.Files...)
+	}
+	s.postStart = parsed.PostStart
+	if p := parsed.TorrentBlocker; p != nil && p.Enabled {
+		users := []string{}
+		if p.IgnoreLists != nil {
+			for _, id := range p.IgnoreLists.UserID {
+				users = append(users, strconv.Itoa(id))
+			}
+		}
+		position := 0
+		if p.RulePlacement != nil {
+			position = *p.RulePlacement
+		}
+		url := ""
+		if p.WebhookURL != nil {
+			url = *p.WebhookURL
+		}
+		s.TorrentBlocker.Configure(true, p.BlockDuration, position, url, p.IncludeRuleTags, ignored, users)
 	} else {
 		s.TorrentBlocker.Reset()
 	}
-
-	s.configHash = hashStr
+	s.configHash = hashString
 	s.pluginUUID = req.Plugin.UUID
 	s.pluginName = req.Plugin.Name
-
 	return true
 }
-
-func (s *Service) Reset() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.resetLocked()
+func validWebhook(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != ""
 }
-
-func (s *Service) resetLocked() {
+func (s *Service) Reset() error { s.mu.Lock(); defer s.mu.Unlock(); return s.resetLocked() }
+func (s *Service) resetLocked() error {
+	if s.NftManager.IsAvailable() {
+		if err := s.NftManager.RecreateTables(); err != nil {
+			return err
+		}
+	}
 	s.TorrentBlocker.Reset()
-	s.whitelistIPs = make(map[string]struct{})
+	s.whitelistIPs = map[string]struct{}{}
 	s.cleanupFiles = nil
+	s.postStart = nil
 	s.configHash = ""
 	s.pluginUUID = ""
 	s.pluginName = ""
-	_ = s.NftManager.RecreateTables()
+	return nil
 }
 
 // http controllers
 
 func (s *Service) HandleSync(w http.ResponseWriter, r *http.Request) {
 	var req SyncRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := apiutil.Decode(r, &req); err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"response": map[string]interface{}{"accepted": false},
 		})
@@ -302,7 +438,7 @@ type BlockIPsRequest struct {
 
 func (s *Service) HandleBlockIPs(w http.ResponseWriter, r *http.Request) {
 	var req BlockIPsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := apiutil.Decode(r, &req); err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"response": map[string]interface{}{"accepted": false},
 		})
@@ -310,12 +446,24 @@ func (s *Service) HandleBlockIPs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, item := range req.IPs {
-		_ = s.NftManager.BlockIP(item.IP, item.Timeout)
-		KillSockets([]string{item.IP})
+		if _, err := netip.ParseAddr(item.IP); err != nil || item.Timeout < 0 {
+			writeJSON(w, 200, map[string]interface{}{"response": map[string]bool{"accepted": false}})
+			return
+		}
+	}
+	accepted := s.NftManager.IsAvailable()
+	for _, item := range req.IPs {
+		if err := s.NftManager.BlockIP(item.IP, item.Timeout); err != nil {
+			accepted = false
+			break
+		}
+		if err := s.DropConnections([]string{item.IP}); err != nil {
+			log.Printf("[PLUGIN] connection drop: %v", err)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"response": map[string]interface{}{"accepted": true},
+		"response": map[string]interface{}{"accepted": accepted},
 	})
 }
 
@@ -325,18 +473,18 @@ type UnblockIPsRequest struct {
 
 func (s *Service) HandleUnblockIPs(w http.ResponseWriter, r *http.Request) {
 	var req UnblockIPsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := apiutil.Decode(r, &req); err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"response": map[string]interface{}{"accepted": false},
 		})
 		return
 	}
 
-	_ = s.NftManager.UnblockIPs(req.IPs, TorrentBlockerSetName)
+	err1 := s.NftManager.UnblockIPs(req.IPs, TorrentBlockerSetName)
 	_ = s.NftManager.UnblockIPs(req.IPs, IngressFilterIPSetName)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"response": map[string]interface{}{"accepted": true},
+		"response": map[string]interface{}{"accepted": err1 == nil},
 	})
 }
 
@@ -351,4 +499,63 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(data)
+}
+
+func (r *SyncRequest) UnmarshalJSON(data []byte) error {
+	type plain SyncRequest
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if fields["plugin"] == nil {
+		return errors.New("plugin is required (use null to disable)")
+	}
+	return json.Unmarshal(data, (*plain)(r))
+}
+func (r *SyncRequest) Validate() error {
+	if r.Plugin == nil {
+		return nil
+	}
+	if r.Plugin.Config == nil || r.Plugin.Name == "" || !validUUID(r.Plugin.UUID) {
+		return errors.New("plugin config, name, and UUID are required")
+	}
+	return nil
+}
+func validUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+		} else if !strings.ContainsRune("0123456789abcdefABCDEF", c) {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *BlockIPsRequest) Validate() error {
+	if len(r.IPs) == 0 {
+		return errors.New("ips are required")
+	}
+	for _, item := range r.IPs {
+		if _, err := netip.ParseAddr(item.IP); err != nil || item.Timeout < 0 {
+			return errors.New("invalid IP or timeout")
+		}
+	}
+	return nil
+}
+func (r *UnblockIPsRequest) Validate() error {
+	if r.IPs == nil {
+		return errors.New("ips are required")
+	}
+	for _, ip := range r.IPs {
+		if _, err := netip.ParseAddr(ip); err != nil {
+			return err
+		}
+	}
+	return nil
 }

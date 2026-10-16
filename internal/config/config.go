@@ -68,8 +68,8 @@ func LoadEnv() {
 			if len(parts) == 2 {
 				key := strings.TrimSpace(parts[0])
 				val := strings.TrimSpace(parts[1])
-				if (strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"")) ||
-					(strings.HasPrefix(val, "'") && strings.HasSuffix(val, "'")) {
+				if len(val) >= 2 && ((strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"")) ||
+					(strings.HasPrefix(val, "'") && strings.HasSuffix(val, "'"))) {
 					val = val[1 : len(val)-1]
 				}
 				if _, exists := os.LookupEnv(key); !exists {
@@ -100,29 +100,41 @@ func LoadConfig() (*Config, error) {
 
 	nodePort := 3000
 	if portStr := os.Getenv("NODE_PORT"); portStr != "" {
-		if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
-			nodePort = p
+		p, err := strconv.Atoi(portStr)
+		if err != nil || p < 1 || p > 65535 {
+			return nil, errors.New("NODE_PORT must be between 1 and 65535")
 		}
+		nodePort = p
 	}
 
 	internalToken := os.Getenv("INTERNAL_REST_TOKEN")
 	if internalToken == "" {
-		internalToken = "remnanode-internal-secret"
+		internalToken, err = RandomToken()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	internalSocket := os.Getenv("INTERNAL_SOCKET_PATH")
 	if internalSocket == "" {
-		internalSocket = "rw-node.sock"
+		internalSocket = "rw-node-" + internalToken[:min(16, len(internalToken))]
 	}
 
 	xtlsSocket := os.Getenv("XTLS_API_SOCKET_PATH")
 	if xtlsSocket == "" {
-		xtlsSocket = "rw-api.sock"
+		xtlsSocket = filepath.Join(RuntimeDir(), "xray.sock")
 	}
 
 	s6ServiceDir := os.Getenv("XRAY_S6_SERVICE_DIR")
 	if s6ServiceDir == "" {
 		s6ServiceDir = "/run/service/xray"
+	}
+
+	if _, _, err := SocketAddress(xtlsSocket); err != nil {
+		return nil, err
+	}
+	if err := PrivateDir(RuntimeDir()); err != nil {
+		return nil, err
 	}
 
 	return &Config{
