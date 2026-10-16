@@ -177,6 +177,14 @@ class ScriptTests(unittest.TestCase):
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             self.assertIn('remnanode-linux-mips64le',events)
 
+    def test_arm_and_riscv_detection(self):
+        for machine,arch in [('armv6l','armv6'),('armv5tel','armv5'),('armv7l','armv7'),('riscv64','riscv64')]:
+            with self.subTest(machine=machine), tempfile.TemporaryDirectory() as directory:
+                root=pathlib.Path(directory)
+                result,events=self.run_installer(root,arch=arch,MOCK_MACHINE=machine)
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertIn('remnanode-linux-'+arch+'\n',events)
+
     def test_openrc_service(self):
         with tempfile.TemporaryDirectory() as directory:
             root=pathlib.Path(directory)

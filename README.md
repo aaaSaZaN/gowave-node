@@ -31,7 +31,7 @@ REMNANODE_TEST_CORE=/tmp/remnanode-core/rw-core go test -race ./internal/xray -r
 ```
 
 CI runs baseline/latest-stable core tests and isolated native/s6 HTTPS smoke tests
-on amd64 and arm64. ARMv7 and MIPS binaries are cross-built; router deployment is
+on amd64 and arm64. 386, ARMv7/v6/v5, RISC-V, and MIPS binaries are cross-built; router deployment is
 not certified by the server smoke tests.
 
 ## Install, update, or migrate
@@ -49,7 +49,8 @@ script as the `install.sh` asset, listed in `checksums.txt`.
 `install.sh` is POSIX sh (bash, dash, and BusyBox ash). It needs curl or wget and
 sha256sum, shasum, or openssl; no Python or bash is required. It detects:
 
-- the architecture: amd64, 386, arm64, armv7, mips, mipsle, mips64, or mips64le.
+- the architecture: amd64, 386, arm64, armv7, armv6, armv5, riscv64, mips,
+  mipsle, mips64, or mips64le.
   MIPS byte order and 32-bit userlands come from the ELF header of `/bin/sh`;
 - the service manager: systemd, OpenRC (Alpine), or OpenWrt procd. Override it
   with `REMNANODE_INIT=systemd|openrc|procd`;

@@ -202,6 +202,8 @@ produce identical assets:
 - `release.yml` also builds the ASN ZIP and publishes `install.sh`,
   `checksums.txt`, and the legacy `sha256sums.txt` copy. `install.sh` accepts
   either manifest and treats a missing ASN ZIP as optional.
-- Both workflows set `GOMIPS=softfloat` for mips/mipsle, build `386`, and label
-  GOARCH=arm builds as `armv7` with GOARM=7. CI server smoke tests cover
+- Both workflows set `GOMIPS=softfloat` for mips/mipsle, build `386` and
+  `riscv64`, and publish GOARCH=arm builds as `armv7`, `armv6`, and `armv5`
+  (GOARM=7/6/5). `updater.AssetArch` reads GOARM from build info so updates
+  keep the ARM variant; `GetCurrentArch` stays GOARCH for the API response. CI server smoke tests cover
   amd64/arm64, not router deployment.

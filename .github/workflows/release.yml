@@ -56,16 +56,23 @@ jobs:
           # 4. Linux armv7 (32-bit ARM)
           CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="${LDFLAGS}" -o dist/remnanode-linux-armv7 ./cmd/remnanode
 
-          # 5. Linux mips (softfloat)
+          # 5. Linux armv6 / armv5 (Raspberry Pi Zero/1, older routers and NAS)
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=6 go build -ldflags="${LDFLAGS}" -o dist/remnanode-linux-armv6 ./cmd/remnanode
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=5 go build -ldflags="${LDFLAGS}" -o dist/remnanode-linux-armv5 ./cmd/remnanode
+
+          # 6. Linux riscv64
+          CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 go build -ldflags="${LDFLAGS}" -o dist/remnanode-linux-riscv64 ./cmd/remnanode
+
+          # 7. Linux mips (softfloat)
           CGO_ENABLED=0 GOOS=linux GOARCH=mips GOMIPS=softfloat go build -ldflags="${LDFLAGS}" -o dist/remnanode-linux-mips ./cmd/remnanode
 
-          # 6. Linux mipsle (softfloat)
+          # 8. Linux mipsle (softfloat)
           CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat go build -ldflags="${LDFLAGS}" -o dist/remnanode-linux-mipsle ./cmd/remnanode
 
-          # 7. Linux mips64
+          # 9. Linux mips64
           CGO_ENABLED=0 GOOS=linux GOARCH=mips64 go build -ldflags="${LDFLAGS}" -o dist/remnanode-linux-mips64 ./cmd/remnanode
 
-          # 8. Linux mips64le
+          # 10. Linux mips64le
           CGO_ENABLED=0 GOOS=linux GOARCH=mips64le go build -ldflags="${LDFLAGS}" -o dist/remnanode-linux-mips64le ./cmd/remnanode
 
       - name: Build ASN index
@@ -89,6 +96,9 @@ jobs:
             dist/remnanode-linux-386
             dist/remnanode-linux-arm64
             dist/remnanode-linux-armv7
+            dist/remnanode-linux-armv6
+            dist/remnanode-linux-armv5
+            dist/remnanode-linux-riscv64
             dist/remnanode-linux-mips
             dist/remnanode-linux-mipsle
             dist/remnanode-linux-mips64

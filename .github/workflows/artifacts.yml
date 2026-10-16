@@ -22,10 +22,13 @@ jobs:
         run: |
           case "$BUILD_VERSION" in *[!a-zA-Z0-9.+-]*|'') exit 1 ;; esac
           mkdir -p dist
-          for arch in amd64 386 arm64 arm mips mipsle mips64 mips64le; do
+          # GOARCH[:GOARM]; ARM builds are published as armv<GOARM>.
+          for target in amd64 386 arm64 arm:7 arm:6 arm:5 riscv64 mips mipsle mips64 mips64le; do
+            arch=${target%%:*}
+            arm=7
             asset_arch=$arch
-            if [ "$arch" = arm ]; then asset_arch=armv7; fi
-            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" GOARM=7 GOMIPS=softfloat go build -trimpath -ldflags="-s -w -X main.AppVersion=$BUILD_VERSION" -o "dist/remnanode-linux-$asset_arch" ./cmd/remnanode
+            case $target in arm:*) arm=${target#arm:}; asset_arch=armv$arm ;; esac
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" GOARM="$arm" GOMIPS=softfloat go build -trimpath -ldflags="-s -w -X main.AppVersion=$BUILD_VERSION" -o "dist/remnanode-linux-$asset_arch" ./cmd/remnanode
           done
       - run: sudo apt-get update && sudo apt-get install -y zstd
       - run: bash scripts/build-asn.sh dist/asn-prefixes.zip

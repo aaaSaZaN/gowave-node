@@ -345,7 +345,7 @@ func newRouter(authMgr *auth.AuthManager, xrayCtrl *xray.Controller, statsSvc *s
 			}
 			chosenRelease := &exact
 
-			asset, err := updater.MatchAsset(chosenRelease.Assets, updater.GetCurrentOS(), updater.GetCurrentArch(), targetBinary)
+			asset, err := updater.MatchAsset(chosenRelease.Assets, updater.GetCurrentOS(), updater.AssetArch(), targetBinary)
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 				return

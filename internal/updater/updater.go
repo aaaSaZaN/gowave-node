@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 )
@@ -95,7 +96,7 @@ func MatchAsset(assets []ReleaseAsset, targetOS, targetArch, binaryName string) 
 		names = []string{"remnanode-" + targetOS + "-" + arch, "remnanode-" + targetOS + "-" + arch + ".tar.gz", "remnanode-" + targetOS + "-" + arch + ".zip"}
 	}
 	if binaryName == "rw-core" && targetOS == "linux" {
-		arch := map[string]string{"amd64": "64", "386": "32", "arm": "arm32-v7a", "arm64": "arm64-v8a", "mips": "mips32", "mipsle": "mips32le", "mips64": "mips64", "mips64le": "mips64le"}[targetArch]
+		arch := map[string]string{"amd64": "64", "386": "32", "arm": "arm32-v7a", "armv5": "arm32-v5", "armv6": "arm32-v6", "armv7": "arm32-v7a", "arm64": "arm64-v8a", "mips": "mips32", "mipsle": "mips32le", "mips64": "mips64", "mips64le": "mips64le", "riscv64": "riscv64"}[targetArch]
 		if arch != "" {
 			names = []string{"Xray-linux-" + arch + ".zip"}
 		}
@@ -315,6 +316,27 @@ func GetCurrentArch() string {
 	return runtime.GOARCH
 }
 
+// AssetArch names release assets for this build. Unlike GOARCH it keeps the ARM
+// variant, so an armv5/armv6 node never downloads an armv7 node or core.
+func AssetArch() string {
+	if runtime.GOARCH != "arm" {
+		return runtime.GOARCH
+	}
+	return "armv" + armVersion()
+}
+
+func armVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			// GOARM may carry a float ABI suffix, such as "6,softfloat".
+			if setting.Key == "GOARM" && setting.Value != "" {
+				return strings.SplitN(setting.Value, ",", 2)[0]
+			}
+		}
+	}
+	return "7"
+}
+
 func GetCurrentOS() string {
 	return runtime.GOOS
 }
@@ -338,9 +360,9 @@ func EnsureCore(targetPath string) (string, error) {
 	}
 	latest := &release
 
-	asset, err := MatchAsset(latest.Assets, GetCurrentOS(), GetCurrentArch(), "rw-core")
+	asset, err := MatchAsset(latest.Assets, GetCurrentOS(), AssetArch(), "rw-core")
 	if err != nil {
-		return "", fmt.Errorf("could not find compatible asset for %s/%s: %w", GetCurrentOS(), GetCurrentArch(), err)
+		return "", fmt.Errorf("could not find compatible asset for %s/%s: %w", GetCurrentOS(), AssetArch(), err)
 	}
 
 	fmt.Printf("[CORE] Downloading %s (%s)...\n", asset.Name, latest.TagName)

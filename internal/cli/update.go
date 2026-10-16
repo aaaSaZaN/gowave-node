@@ -56,7 +56,7 @@ func RunUpdateCLI(currentVersion string, args []string) {
 		}
 		chosenRelease = &exact
 	} else if !autoConfirm {
-		fmt.Printf("\nCurrent version: %s%s%s (arch: %s/%s)\n\n", colorGreen, currentVersion, colorReset, updater.GetCurrentOS(), updater.GetCurrentArch())
+		fmt.Printf("\nCurrent version: %s%s%s (arch: %s/%s)\n\n", colorGreen, currentVersion, colorReset, updater.GetCurrentOS(), updater.AssetArch())
 		if len(releases) == 0 {
 			fmt.Fprintln(os.Stderr, "No releases found")
 			os.Exit(1)
@@ -132,7 +132,7 @@ func RunUpdateCLI(currentVersion string, args []string) {
 		}
 	}
 
-	asset, err := updater.MatchAsset(chosenRelease.Assets, updater.GetCurrentOS(), updater.GetCurrentArch(), "remnanode")
+	asset, err := updater.MatchAsset(chosenRelease.Assets, updater.GetCurrentOS(), updater.AssetArch(), "remnanode")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s[ERROR]%s %v\n", colorRed, colorReset, err)
 		os.Exit(1)
@@ -300,7 +300,7 @@ func RunCoreCLI(args []string) {
 		}
 	}
 
-	asset, err := updater.MatchAsset(chosenRelease.Assets, updater.GetCurrentOS(), updater.GetCurrentArch(), "rw-core")
+	asset, err := updater.MatchAsset(chosenRelease.Assets, updater.GetCurrentOS(), updater.AssetArch(), "rw-core")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s[ERROR]%s %v\n", colorRed, colorReset, err)
 		os.Exit(1)

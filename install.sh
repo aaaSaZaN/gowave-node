@@ -47,6 +47,9 @@ case $machine in
     i386|i486|i586|i686|x86) arch=386 ;;
     aarch64|arm64) arch=arm64 ;;
     armv7*|armv8l|armhf) arch=armv7 ;;
+    armv6*) arch=armv6 ;;
+    armv5*) arch=armv5 ;;
+    riscv64) arch=riscv64 ;;
     mips*)
         arch=mips
         # A 64-bit kernel with a 32-bit userland keeps the 32-bit build.
@@ -57,7 +60,7 @@ case $machine in
             *) case $machine in *el|*le) arch=${arch}le ;; esac ;;
         esac
         ;;
-    *) fail "Unsupported CPU architecture: $machine. Published builds: amd64, 386, arm64, armv7, mips, mipsle, mips64, mips64le." ;;
+    *) fail "Unsupported CPU architecture: $machine. Published builds: amd64, 386, arm64, armv7, armv6, armv5, riscv64, mips, mipsle, mips64, mips64le." ;;
 esac
 
 init=${REMNANODE_INIT:-}
