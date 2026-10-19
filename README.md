@@ -18,7 +18,7 @@ One command installs a fresh node, updates a native node, or migrates a Docker
 `remnawave/node` container:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/aaaSaZaN/remnanode-go/main/install.sh | sudo sh
+sudo sh -c "$(curl -fsSL https://raw.githubusercontent.com/aaaSaZaN/remnanode-go/main/install.sh)"
 ```
 
 A fresh install asks for the `SECRET_KEY` from the node settings in the panel and
@@ -57,7 +57,7 @@ router deployment is not certified by the server smoke tests.
 ## Releases
 
 To canary a published candidate, run
-`curl -fsSL ... | sudo REMNANODE_VERSION=v1.0.6-rc.1 sh`. An unavailable explicitly
+`sudo REMNANODE_VERSION=v1.0.6-rc.1 sh -c "$(curl -fsSL ...)"`. An unavailable explicitly
 selected tag fails without switching services.
 
 Candidate assets must include `checksums.txt`, `asn-prefixes.zip`, and the matching

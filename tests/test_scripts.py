@@ -41,6 +41,10 @@ elif name=='systemctl' or name=='rc-service':
  if args[-1]=='restart' or args[0]=='restart':
   if os.environ.get('MOCK_RESTART_FAIL')=='1':sys.exit(1)
  if args[0] in ('is-active','is-enabled') or args[-1]=='status':sys.exit(3)
+elif name=='ss':
+ # The port is held by a stranger (MOCK_PORT_BUSY=1) or by the node once restarted.
+ started=any(line.split()[0] in ('systemctl','rc-service') and 'restart' in line.split() for line in open(root/'events'))
+ if os.environ.get('MOCK_PORT_BUSY')=='1' or (started and os.environ.get('MOCK_LISTENS','1')=='1'):print('LISTEN 0 4096 *:2222 *:*')
 elif name=='docker':
  docker=os.environ.get('MOCK_DOCKER','1')=='1'
  if args[0]=='info' and not docker:sys.exit(1)
@@ -70,7 +74,7 @@ class ScriptTests(unittest.TestCase):
     def run_installer(self, root, runs=1, arch='amd64', manifest='checksums.txt', asn=True, corrupt=False, **environment):
         (root/'assets').mkdir()
         (root/'bin').mkdir()
-        for name in ['id','uname','docker','curl','systemctl','rc-service','rc-update']:
+        for name in ['id','uname','docker','curl','systemctl','rc-service','rc-update','ss']:
             script=root/'bin'/name
             script.write_text(MOCK)
             script.chmod(0o755)
@@ -196,6 +200,24 @@ class ScriptTests(unittest.TestCase):
             self.assertEqual((root/'init.d/remnanode').stat().st_mode&0o777,0o755)
             self.assertIn('rc-update add remnanode default',events)
             self.assertIn('rc-service remnanode restart',events)
+
+
+    def test_fresh_install_rejects_busy_port(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_PORT_BUSY='1',SECRET_KEY='abc',NODE_PORT='2222')
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('NODE_PORT 2222 is already in use',result.stdout+result.stderr)
+            self.assertFalse((root/'install/remnanode').exists())
+            self.assertFalse((root/'units/remnanode.service').exists())
+
+    def test_fresh_install_reports_node_not_listening(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            result,_=self.run_installer(root,MOCK_DOCKER='0',MOCK_READY='0',MOCK_LISTENS='0',SECRET_KEY='abc',NODE_PORT='2222')
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertIn('not listening on port 2222',result.stdout)
+            self.assertNotIn('panel has not sent a configuration',result.stdout)
 
 
 if __name__=='__main__':unittest.main()

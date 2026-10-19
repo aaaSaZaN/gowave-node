@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install, update, or migrate a native Remnanode (Go) node.
 #
-#   curl -fsSL https://raw.githubusercontent.com/aaaSaZaN/remnanode-go/main/install.sh | sudo sh
+#   sudo sh -c "$(curl -fsSL https://raw.githubusercontent.com/aaaSaZaN/remnanode-go/main/install.sh)"
 #
 # The same command installs a fresh node, updates an existing native node, or
 # migrates a Docker remnawave/node container, keeping its environment. Docker is
@@ -120,6 +120,16 @@ env_set() {
     printf '%s=%s\n' "$1" "$2" >> "$work/env.next"
     mv -f "$work/env.next" "$work/env"
 }
+# port_busy reports a TCP listener on $1; without ss or netstat it assumes free.
+port_busy() {
+    if have ss; then
+        ss -Hltn "sport = :$1" 2>/dev/null | grep -q .
+    elif have netstat; then
+        netstat -ltn 2>/dev/null | awk -v p=":$1" 'substr($4, length($4) - length(p) + 1) == p {f = 1} END {exit !f}'
+    else
+        return 1
+    fi
+}
 unquote() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e "s/^$2=//" -e 's/^"\(.*\)"$/\1/' -e "s/^'\\(.*\\)'\$/\\1/"; }
 
 work=$(mktemp -d)
@@ -221,6 +231,11 @@ if [ -z "$port" ] && [ "$fresh" = true ]; then port=$(ask 'NODE_PORT [3000]: ');
 port=$(unquote "${port:-3000}" NODE_PORT)
 case $port in ''|*[!0-9]*) fail "Invalid NODE_PORT: $port" ;; esac
 if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then fail "Invalid NODE_PORT: $port"; fi
+# Our own node or container may hold the port; anything else would make the
+# new node crash-loop while the panel reaches a stranger on that port.
+if [ "$native_running" != true ] && [ "$was_running" != true ] && port_busy "$port"; then
+    fail "NODE_PORT $port is already in use by another program (see: ss -ltnp 'sport = :$port'). Pick a free port and use the same one for the node in the panel."
+fi
 env_set SECRET_KEY "$secret"
 env_set NODE_PORT "$port"
 
@@ -327,6 +342,13 @@ if [ "$was_running" = true ]; then
     docker stop -t 10 "$container"
 fi
 svc restart
+if [ "$was_running" = true ] || [ "$native_running" = true ]; then
+    log 'Waiting up to 2 minutes for the node to become ready...'
+else
+    # Readiness needs the panel to connect, which it does only once the node
+    # is added there; without this line the wait looks like a hang.
+    log "Waiting up to 2 minutes for the panel to connect. If the node is not added in the panel yet, add it now with port $port."
+fi
 if "$install_dir/remnanode" status --wait-ready; then
     complete=true
     log "Node is ready; measured switch-to-Xray-readiness time: $(( $(date +%s) - started )) seconds."
@@ -334,8 +356,12 @@ elif [ "$was_running" = true ] || [ "$native_running" = true ]; then
     fail 'The node did not become ready.'
 else
     complete=true
-    log 'Installed and running, but the panel has not sent a configuration yet.'
-    log 'Check that the node is added in the panel, then run: remnanode status'
+    if port_busy "$port"; then
+        log 'Installed and running, but the panel has not sent a configuration yet.'
+        log 'Check that the node is added in the panel, then run: remnanode status'
+    else
+        log "Installed, but the node is not listening on port $port. Check its log: remnanode status"
+    fi
 fi
 for name in remnanode remnanode-go xlogs; do
     destination=$prefix/bin/$name
