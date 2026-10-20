@@ -51,8 +51,8 @@ func main() {
 			cli.RunLogsCLI("node", os.Args[2:])
 			return
 		case "service":
-			if len(os.Args) < 3 || len(os.Args) > 5 || os.Args[2] != "install" {
-				log.Fatal("Usage: remnanode service install [directory] [unit-directory]")
+			if len(os.Args) < 3 || len(os.Args) > 6 || os.Args[2] != "install" {
+				log.Fatal("Usage: remnanode service install [directory] [unit-directory] [systemd|openrc|procd]")
 			}
 			exe, err := os.Executable()
 			if err != nil {
@@ -65,7 +65,11 @@ func main() {
 			if len(os.Args) >= 5 {
 				unitDir = os.Args[4]
 			}
-			if err := serviceunit.Install(dir, unitDir); err != nil {
+			manager := "systemd"
+			if len(os.Args) >= 6 {
+				manager = os.Args[5]
+			}
+			if err := serviceunit.InstallForManager(dir, unitDir, manager); err != nil {
 				log.Fatal(err)
 			}
 			return

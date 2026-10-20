@@ -1,9 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Embedded in the binary: used by installers and the first upgraded root service.
-set -euo pipefail
+set -eu
 install_dir=$1
 unit_dir=${2:-/etc/systemd/system}
-install_dir=$(realpath -m -- "$install_dir")
+manager=${4:-systemd}
+case "$manager" in systemd|openrc|procd) ;; *) echo 'Unsupported service manager.' >&2; exit 1 ;; esac
+have() { command -v "$1" >/dev/null 2>&1; }
 [ "$(id -u)" -eq 0 ] || { echo 'Service installation requires root.' >&2; exit 1; }
 case "$install_dir" in
     /*) ;;
@@ -16,15 +18,34 @@ case "$install_dir" in
         echo 'Use a dedicated installation directory outside home directories.' >&2; exit 1 ;;
 esac
 mkdir -p "$install_dir"
+install_dir=$(cd "$install_dir" && pwd -P)
+case "$install_dir" in
+    /|/bin|/sbin|/usr|/usr/bin|/usr/sbin|/usr/local|/usr/local/bin|/etc|/var|/var/lib|/tmp|/opt|/srv|/home|/home/*|/root|/root/*)
+        echo 'Use a dedicated installation directory outside home directories.' >&2; exit 1 ;;
+esac
 if [ -n "${3:-}" ] && [ "$3" != "$install_dir/remnanode" ]; then
-    install -m 0755 "$3" "$install_dir/remnanode.new"
+    cp "$3" "$install_dir/remnanode.new"
+    chmod 0755 "$install_dir/remnanode.new"
     mv -f "$install_dir/remnanode.new" "$install_dir/remnanode"
 fi
-if ! getent group remnanode >/dev/null; then
-    groupadd --system remnanode
+group_exists() {
+    if have getent; then getent group remnanode >/dev/null
+    else awk -F: '$1 == "remnanode" { found=1 } END { exit !found }' /etc/group
+    fi
+}
+if ! group_exists; then
+    if have groupadd; then groupadd --system remnanode
+    elif have addgroup; then addgroup -S remnanode
+    else echo 'Install groupadd or BusyBox addgroup before installing the node.' >&2; exit 1
+    fi
 fi
 if ! id remnanode >/dev/null 2>&1; then
-    useradd --system --gid remnanode --home-dir "$install_dir" --no-create-home --shell /usr/sbin/nologin remnanode
+    if have useradd; then
+        useradd --system --gid remnanode --home-dir "$install_dir" --no-create-home --shell /bin/false remnanode
+    elif have adduser; then
+        adduser -S -D -H -h "$install_dir" -s /bin/false -G remnanode remnanode
+    else echo 'Install useradd or BusyBox adduser before installing the node.' >&2; exit 1
+    fi
 fi
 [ "$(id -u remnanode)" -ne 0 ] || { echo 'Refusing a service account with UID 0.' >&2; exit 1; }
 # Put the managed core and mutable geodata inside the writable installation.
@@ -55,6 +76,8 @@ chown -hR remnanode:remnanode "$install_dir"
 chmod 0750 "$install_dir"
 [ ! -L "$install_dir/.env" ] || { echo "Refusing a symlinked .env" >&2; exit 1; }
 [ ! -f "$install_dir/.env" ] || chmod 0600 "$install_dir/.env"
+# OpenRC/procd provide the runtime directory and capability policy at startup.
+[ "$manager" = systemd ] || exit 0
 mkdir -p "$unit_dir/remnanode.service.d"
 policy=$(mktemp "$unit_dir/remnanode.service.d/.hardening.XXXXXX")
 trap 'rm -f -- "$policy"' EXIT

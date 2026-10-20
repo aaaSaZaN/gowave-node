@@ -78,6 +78,21 @@ case $init in
     openrc|procd) service_file=${REMNANODE_INITD_DIR:-/etc/init.d}/remnanode; service_mode=0755 ;;
     *) fail "Unsupported REMNANODE_INIT value: $init" ;;
 esac
+runtime_dir=$(printf '%s' "${REMNANODE_RUNTIME_DIR:-/run/remnanode}" | sed 's#//*#/#g; s#/$##')
+case "$runtime_dir" in
+    /*) ;;
+    *) fail 'REMNANODE_RUNTIME_DIR must be an absolute dedicated directory.' ;;
+esac
+case "$runtime_dir" in
+    /|/run|/var|/var/run|/var/lib|/var/log|/tmp|/opt|/etc|/usr|/usr/local|/dev|/proc|/sys|/home|/root|*/..|*/../*|*/.|*/./*|*[!a-zA-Z0-9_./-]*)
+        fail 'REMNANODE_RUNTIME_DIR must be a dedicated directory with a simple path.' ;;
+esac
+config_dir=${REMNANODE_CONFIG_DIR:-/etc/remnanode}
+capabilities_file=$config_dir/capabilities.json
+if [ "$init" = procd ]; then
+    have ujail || fail 'OpenWrt requires procd-ujail for unprivileged network capabilities. Install it before running the installer.'
+    ujail=$(command -v ujail)
+fi
 repo=aaaSaZaN/remnanode-go
 version=${REMNANODE_VERSION:-latest}
 case $version in *[!a-zA-Z0-9.+-]*|'') fail 'Invalid release version.' ;; esac
@@ -102,6 +117,8 @@ svc() {
 }
 # Copy with a mode through a temporary sibling so the target is replaced atomically.
 put() { cp "$2" "$3.new" && chmod "$1" "$3.new" && mv -f "$3.new" "$3"; }
+# Unlike new release files, rollback files must retain their original ownership.
+restore() { cp -p "$1" "$2.new" && mv -f "$2.new" "$2"; }
 verify() {
     expected=$(awk -v file="$2" '$2 == file || $2 == "*" file {print $1; exit}' "$1")
     [ -n "$expected" ] || fail "No published checksum for $2."
@@ -149,21 +166,28 @@ rollback() {
         log 'Installation failed; restoring the previous service.'
         if [ "$switched" = true ]; then svc stop; fi
         if [ "$previous_enabled" != true ]; then svc disable 2>/dev/null; fi
-        if [ -f "$work/previous-node" ]; then put 0755 "$work/previous-node" "$install_dir/remnanode"; else rm -f -- "$install_dir/remnanode"; fi
-        if [ -f "$work/previous-env" ]; then put 0600 "$work/previous-env" "$install_dir/.env"; else rm -f -- "$install_dir/.env"; fi
-        if [ -f "$work/previous-service" ]; then put "$service_mode" "$work/previous-service" "$service_file"; else rm -f -- "$service_file"; fi
+        if [ -f "$work/previous-node" ]; then restore "$work/previous-node" "$install_dir/remnanode"; else rm -f -- "$install_dir/remnanode"; fi
+        if [ -f "$work/previous-env" ]; then restore "$work/previous-env" "$install_dir/.env"; else rm -f -- "$install_dir/.env"; fi
+        if [ -f "$work/previous-service" ]; then restore "$work/previous-service" "$service_file"; else rm -f -- "$service_file"; fi
         if [ "$init" = systemd ]; then
             systemctl disable --now remnanode-restart.path remnanode-update.path 2>/dev/null || true
             for policy in remnanode.service.d/90-unprivileged.conf remnanode-restart.path remnanode-restart.service remnanode-update.path remnanode-update.service; do
                 rm -f -- "$(dirname "$service_file")/$policy"
                 if [ -f "$work/policy/$policy" ]; then
                     mkdir -p "$(dirname "$(dirname "$service_file")/$policy")"
-                    cp "$work/policy/$policy" "$(dirname "$service_file")/$policy"
+                    cp -p "$work/policy/$policy" "$(dirname "$service_file")/$policy"
                 fi
             done
-            if [ "$previous_paths" = true ]; then systemctl enable --now remnanode-restart.path remnanode-update.path || true; fi
+        fi
+        if [ "$init" = procd ]; then
+            if [ -f "$work/previous-capabilities" ]; then restore "$work/previous-capabilities" "$capabilities_file"
+            else rm -f -- "$capabilities_file"
+            fi
         fi
         svc reload
+        if [ "$init" = systemd ] && [ "$previous_paths" = true ]; then
+            systemctl enable --now remnanode-restart.path remnanode-update.path || true
+        fi
         if [ "$switched" = true ] && [ "$was_running" = true ]; then
             docker update --restart="$restart_policy" "$container"
             docker start "$container"
@@ -180,21 +204,24 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 mkdir -p "$install_dir" "$prefix/bin" "$(dirname "$service_file")"
-if [ -f "$service_file" ]; then cp "$service_file" "$work/previous-service"; fi
+if [ -f "$service_file" ]; then cp -p "$service_file" "$work/previous-service"; fi
 previous_paths=false
 if [ "$init" = systemd ]; then
     if [ -f "$(dirname "$service_file")/remnanode-restart.path" ] && [ -f "$(dirname "$service_file")/remnanode-update.path" ]; then previous_paths=true; fi
     for policy in remnanode.service.d/90-unprivileged.conf remnanode-restart.path remnanode-restart.service remnanode-update.path remnanode-update.service; do
         if [ -f "$(dirname "$service_file")/$policy" ]; then
             mkdir -p "$work/policy/$(dirname "$policy")"
-            cp "$(dirname "$service_file")/$policy" "$work/policy/$policy"
+            cp -p "$(dirname "$service_file")/$policy" "$work/policy/$policy"
         fi
     done
 fi
+if [ "$init" = procd ] && [ -f "$capabilities_file" ]; then
+    cp -p "$capabilities_file" "$work/previous-capabilities"
+fi
 if svc enabled; then previous_enabled=true; fi
 if svc active; then native_running=true; fi
-if [ -f "$install_dir/.env" ]; then cp "$install_dir/.env" "$work/previous-env"; fi
-if [ -x "$install_dir/remnanode" ]; then cp "$install_dir/remnanode" "$work/previous-node"; fi
+if [ -f "$install_dir/.env" ]; then cp -p "$install_dir/.env" "$work/previous-env"; fi
+if [ -x "$install_dir/remnanode" ]; then cp -p "$install_dir/remnanode" "$work/previous-node"; fi
 
 if have docker && docker info >/dev/null 2>&1; then
     container=$(docker ps -a --format '{{.Names}}\t{{.Image}}' | awk '$2 ~ /(^|\/)remnawave\/node(:|@|$)|remnanode/ {print $1; exit}')
@@ -298,13 +325,14 @@ After=network-online.target
 Wants=network-online.target
 [Service]
 Type=simple
-User=root
+User=remnanode
+Group=remnanode
 WorkingDirectory=$install_dir
 ExecStart=$install_dir/remnanode
 RuntimeDirectory=remnanode
 RuntimeDirectoryMode=0700
 UMask=0077
-Restart=on-failure
+Restart=always
 RestartSec=3
 LimitNOFILE=1048576
 [Install]
@@ -316,11 +344,21 @@ elif [ "$init" = openrc ]; then
 description="Remnanode (Go)"
 command="$install_dir/remnanode"
 directory="$install_dir"
+command_user="remnanode:remnanode"
+capabilities="^cap_net_bind_service,^cap_net_admin,^cap_net_raw"
+no_new_privs=true
+export REMNANODE_RUNTIME_DIR="$runtime_dir"
+export XRAY_CORE_PATH="$install_dir/rw-core"
+export XRAY_LOCATION_ASSET="$install_dir"
 supervisor=supervise-daemon
 respawn_delay=3
 respawn_max=0
 umask=077
 rc_ulimit="-n 1048576"
+
+start_pre() {
+    checkpath -d -m 0700 -o remnanode:remnanode "$runtime_dir"
+}
 
 depend() {
 	need net
@@ -335,8 +373,14 @@ STOP=10
 USE_PROCD=1
 
 start_service() {
+    [ ! -L "$runtime_dir" ] || return 1
+    mkdir -p "$runtime_dir" || return 1
+    chown remnanode:remnanode "$runtime_dir" || return 1
+    chmod 0700 "$runtime_dir" || return 1
 	procd_open_instance
-	procd_set_param command $install_dir/remnanode
+    # ujail drops UID/GID and sets ambient capabilities before executing the node.
+    procd_set_param command "$ujail" -U remnanode -G remnanode -C "$capabilities_file" -c -- "$install_dir/remnanode"
+    procd_set_param env REMNANODE_RUNTIME_DIR="$runtime_dir" XRAY_CORE_PATH="$install_dir/rw-core" XRAY_LOCATION_ASSET="$install_dir"
 	procd_set_param respawn 3600 3 0
 	procd_set_param limits nofile="1048576 1048576"
 	procd_set_param stdout 1
@@ -354,11 +398,27 @@ if [ ! -x "$install_dir/rw-core" ] && [ ! -x "$prefix/bin/rw-core" ]; then
     "$install_dir/remnanode" core install -y
 fi
 put "$service_mode" "$work/service" "$service_file"
-if [ "$init" = systemd ]; then
-    # The binary embeds the service-account setup and systemd hardening policy.
-    # Keep install.sh portable while sharing the same policy used by native
-    # upgrades and legacy-service migration.
-    "$install_dir/remnanode" service install "$install_dir" "$(dirname "$service_file")"
+# Share persistent ownership and core/asset setup across all service managers.
+"$install_dir/remnanode" service install "$install_dir" "$(dirname "$service_file")" "$init"
+if [ "$init" = procd ]; then
+    mkdir -p "$config_dir"
+    config_path=$(cd "$config_dir" && pwd -P)
+    data_path=$(cd "$install_dir" && pwd -P)
+    case "$config_path" in
+        "$data_path"|"$data_path"/*) fail 'Capability policy must be outside the node-writable installation directory.' ;;
+    esac
+    chown root:root "$config_dir"
+    chmod 0755 "$config_dir"
+    cat > "$work/capabilities.json" <<CAPS
+{
+    "bounding": ["CAP_NET_BIND_SERVICE", "CAP_NET_ADMIN", "CAP_NET_RAW"],
+    "effective": ["CAP_NET_BIND_SERVICE", "CAP_NET_ADMIN", "CAP_NET_RAW"],
+    "inheritable": ["CAP_NET_BIND_SERVICE", "CAP_NET_ADMIN", "CAP_NET_RAW"],
+    "permitted": ["CAP_NET_BIND_SERVICE", "CAP_NET_ADMIN", "CAP_NET_RAW"],
+    "ambient": ["CAP_NET_BIND_SERVICE", "CAP_NET_ADMIN", "CAP_NET_RAW"]
+}
+CAPS
+    put 0644 "$work/capabilities.json" "$capabilities_file"
 fi
 svc reload
 svc enable

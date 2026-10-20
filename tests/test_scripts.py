@@ -18,19 +18,29 @@ set -e
 case "$1" in
 version) echo 'Remnawave Node (Go) vtest' ;;
 core) printf '#!/bin/sh\\nexit 0\\n' > "$(dirname "$0")/rw-core"; chmod +x "$(dirname "$0")/rw-core" ;;
-service) bash "$REMNANODE_SERVICE_INSTALLER" "$3" "$4" ;;
+service) sh "$REMNANODE_SERVICE_INSTALLER" "$3" "$4" "" "${5:-systemd}" ;;
 status) [ "${MOCK_READY:-1}" = 1 ] ;;
 esac
 '''
 MOCK = '''#!/usr/bin/env python3
-import os,pathlib,sys
+import os,pathlib,subprocess,sys
 name=pathlib.Path(sys.argv[0]).name
 args=sys.argv[1:]
 root=pathlib.Path(os.environ['MOCK_ROOT'])
 with open(root/'events','a') as log:log.write(name+' '+' '.join(args)+'\\n')
 env=['SECRET_KEY=test','NODE_PORT=3000','NFTABLES_LOGGING=false','PATH=/usr/bin']
 if name=='id':print('10001' if 'remnanode' in args else '0')
-elif name in ('chown','getent','groupadd','useradd'):pass
+elif name in ('chown','getent','groupadd','useradd','ujail'):pass
+elif name=='cp':
+ subprocess.run(['/bin/cp',*args],check=True)
+ # Model rc.common without writing to the host's /etc. Preserve the original
+ # generated script separately so assertions still check the real template.
+ dest=pathlib.Path(args[-1])
+ if dest.parent==root/'init.d' and dest.name=='remnanode.new':
+  text=dest.read_text()
+  if text.startswith('#!/bin/sh /etc/rc.common'):
+   (root/'procd-template').write_text(text)
+   dest.write_text(text.replace('/etc/rc.common',str(root/'rc.common'),1))
 elif name=='uname':print('Linux' if args==['-s'] else os.environ.get('MOCK_MACHINE','x86_64'))
 elif name=='curl':
  url=next(a for a in args if a.startswith('https:'))
@@ -42,10 +52,13 @@ elif name=='curl':
 elif name=='systemctl' or name=='rc-service':
  if args[-1]=='restart' or args[0]=='restart':
   if os.environ.get('MOCK_RESTART_FAIL')=='1':sys.exit(1)
- if args[0] in ('is-active','is-enabled') or args[-1]=='status':sys.exit(3)
+ if args[0]=='is-enabled':
+  if os.environ.get('MOCK_NATIVE_ACTIVE')=='1':print('enabled')
+  else:sys.exit(3)
+ if args[0]=='is-active' or args[-1]=='status':sys.exit(0 if os.environ.get('MOCK_NATIVE_ACTIVE')=='1' else 3)
 elif name=='ss':
  # The port is held by a stranger (MOCK_PORT_BUSY=1) or by the node once restarted.
- started=any(line.split()[0] in ('systemctl','rc-service') and 'restart' in line.split() for line in open(root/'events'))
+ started=any(line.split()[0] in ('systemctl','rc-service','procd') and 'restart' in line.split() for line in open(root/'events'))
  if os.environ.get('MOCK_PORT_BUSY')=='1' or (started and os.environ.get('MOCK_LISTENS','1')=='1'):print('LISTEN 0 4096 *:2222 *:*')
 elif name=='docker':
  docker=os.environ.get('MOCK_DOCKER','1')=='1'
@@ -63,6 +76,7 @@ elif name=='docker':
 class ScriptTests(unittest.TestCase):
     def test_shell_syntax(self):
         subprocess.run(['sh', '-n', str(INSTALLER)], check=True)
+        subprocess.run(['sh', '-n', str(ROOT/'internal/serviceunit/install.sh')], check=True)
         for path in sorted((ROOT/'scripts').glob('*.sh')):
             subprocess.run(['bash', '-n', str(path)], check=True)
 
@@ -76,10 +90,26 @@ class ScriptTests(unittest.TestCase):
     def run_installer(self, root, runs=1, arch='amd64', manifest='checksums.txt', asn=True, corrupt=False, **environment):
         (root/'assets').mkdir()
         (root/'bin').mkdir()
-        for name in ['id','uname','docker','curl','systemctl','rc-service','rc-update','ss','chown','getent','groupadd','useradd']:
+        for name in ['id','uname','docker','curl','systemctl','rc-service','rc-update','ss','chown','getent','groupadd','useradd','cp','ujail']:
             script=root/'bin'/name
             script.write_text(MOCK)
             script.chmod(0o755)
+        (root/'rc.common').write_text("""#!/bin/sh
+script=$1
+action=$2
+. "$script"
+procd_open_instance() { :; }
+procd_close_instance() { :; }
+procd_set_param() { printf 'procd_param %s\\n' "$*" >> "$MOCK_ROOT/events"; }
+case $action in
+    enabled|running) [ "${MOCK_NATIVE_ACTIVE:-0}" = 1 ] ;;
+    restart)
+        printf 'procd restart\\n' >> "$MOCK_ROOT/events"
+        [ "${MOCK_RESTART_FAIL:-0}" = 0 ] || exit 1
+        start_service ;;
+    enable|disable|stop) : ;;
+esac
+""")
         assets=root/'assets'
         (assets/f'remnanode-linux-{arch}').write_bytes(NODE)
         if asn:
@@ -95,7 +125,8 @@ class ScriptTests(unittest.TestCase):
         env=dict(os.environ,PATH=str(root/'bin')+':'+os.environ['PATH'],MOCK_ROOT=str(root),REMNANODE_INIT='systemd',
                  REMNANODE_SERVICE_INSTALLER=str(ROOT/'internal/serviceunit/install.sh'),
                  REMNANODE_INSTALL_DIR=str(root/'install'),REMNANODE_PREFIX=str(root/'prefix'),
-                 REMNANODE_SYSTEMD_DIR=str(root/'units'),REMNANODE_INITD_DIR=str(root/'init.d'))
+                 REMNANODE_SYSTEMD_DIR=str(root/'units'),REMNANODE_INITD_DIR=str(root/'init.d'),
+                 REMNANODE_CONFIG_DIR=str(root/'config'),REMNANODE_RUNTIME_DIR=str(root/'run'))
         env.pop('SECRET_KEY',None)
         env.pop('NODE_PORT',None)
         env.update(environment)
@@ -114,6 +145,7 @@ class ScriptTests(unittest.TestCase):
         self.assertNotIn('Node is ready',result.stdout)
         self.assertFalse((root/'install/remnanode').exists())
         self.assertFalse((root/'units/remnanode.service').exists())
+        self.assertFalse((root/'units/remnanode.service.d/90-unprivileged.conf').exists())
 
     def test_migration_success_and_rerun(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -208,8 +240,71 @@ class ScriptTests(unittest.TestCase):
             self.assertTrue(script.startswith('#!/sbin/openrc-run\n'))
             self.assertIn('command="'+str(root/'install/remnanode')+'"',script)
             self.assertEqual((root/'init.d/remnanode').stat().st_mode&0o777,0o755)
+            self.assertIn('command_user="remnanode:remnanode"',script)
+            self.assertIn('capabilities="^cap_net_bind_service,^cap_net_admin,^cap_net_raw"',script)
+            self.assertIn('no_new_privs=true',script)
+            self.assertIn('checkpath -d -m 0700 -o remnanode:remnanode',script)
+            self.assertIn('chown -hR remnanode:remnanode',events)
+            self.assertNotIn('systemctl daemon-reload',events)
+            self.assertFalse((root/'units/remnanode.service.d').exists())
             self.assertIn('rc-update add remnanode default',events)
             self.assertIn('rc-service remnanode restart',events)
+
+    def test_procd_service(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            result,events=self.run_installer(root,REMNANODE_INIT='procd')
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            script=(root/'procd-template').read_text()
+            self.assertTrue(script.startswith('#!/bin/sh /etc/rc.common\n'))
+            self.assertIn('-U remnanode -G remnanode',script)
+            self.assertIn('-c -- "'+str(root/'install/remnanode')+'"',script)
+            self.assertIn('chown remnanode:remnanode "'+str(root/'run')+'"',script)
+            expected=['CAP_NET_BIND_SERVICE','CAP_NET_ADMIN','CAP_NET_RAW']
+            policy=json.loads((root/'config/capabilities.json').read_text())
+            self.assertEqual(set(policy),{'bounding','effective','inheritable','permitted','ambient'})
+            for capabilities in policy.values():self.assertEqual(capabilities,expected)
+            self.assertIn('chown -hR remnanode:remnanode',events)
+            self.assertIn('chown root:root '+str(root/'config'),events)
+            self.assertIn('procd restart',events)
+            self.assertIn('procd_param command '+str(root/'bin/ujail'),events)
+            self.assertNotIn('systemctl daemon-reload',events)
+            self.assertEqual((root/'run').stat().st_mode&0o777,0o700)
+
+    def test_procd_rejects_node_writable_capability_policy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            result,events=self.run_installer(root,REMNANODE_INIT='procd',REMNANODE_CONFIG_DIR=str(root/'install/policy'))
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('Capability policy must be outside',result.stderr)
+            self.assertNotIn('docker stop',events)
+            self.assertFalse((root/'install/policy/capabilities.json').exists())
+
+    def test_failed_native_update_preserves_environment_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            install=root/'install';install.mkdir()
+            old_env=install/'.env';old_env.write_text('SECRET_KEY=previous-secret\nNODE_PORT=2222\n')
+            old_env.chmod(0o640)
+            if os.geteuid()==0:os.chown(old_env,65534,65534)
+            before=old_env.stat()
+            old_node=NODE+b'# previous native node\n'
+            (install/'remnanode').write_bytes(old_node);(install/'remnanode').chmod(0o755)
+            units=root/'units';units.mkdir()
+            unit='[Service]\nUser=remnanode\n'
+            (units/'remnanode.service').write_text(unit)
+            policy_dir=units/'remnanode.service.d';policy_dir.mkdir()
+            policy=policy_dir/'90-unprivileged.conf';policy.write_text('[Service]\nUser=remnanode\n# previous policy\n')
+            result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_NATIVE_ACTIVE='1',MOCK_READY='0')
+            self.assertNotEqual(result.returncode,0)
+            self.assertEqual(old_env.read_text(),'SECRET_KEY=previous-secret\nNODE_PORT=2222\n')
+            after=old_env.stat()
+            self.assertEqual((after.st_uid,after.st_gid,after.st_mode&0o777),(before.st_uid,before.st_gid,before.st_mode&0o777))
+            self.assertEqual((install/'remnanode').read_bytes(),old_node)
+            self.assertEqual((units/'remnanode.service').read_text(),unit)
+            self.assertEqual(policy.read_text(),'[Service]\nUser=remnanode\n# previous policy\n')
+            self.assertIn('cp -p '+str(old_env),events)
+            self.assertEqual(events.count('systemctl restart remnanode\n'),2)
 
 
     def test_fresh_install_rejects_busy_port(self):
@@ -220,6 +315,7 @@ class ScriptTests(unittest.TestCase):
             self.assertIn('NODE_PORT 2222 is already in use',result.stdout+result.stderr)
             self.assertFalse((root/'install/remnanode').exists())
             self.assertFalse((root/'units/remnanode.service').exists())
+        self.assertFalse((root/'units/remnanode.service.d/90-unprivileged.conf').exists())
 
     def test_fresh_install_reports_node_not_listening(self):
         with tempfile.TemporaryDirectory() as directory:

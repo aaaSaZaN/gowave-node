@@ -37,7 +37,7 @@ esac
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		cmd := exec.Command("bash", "-s", "--", dir, units)
+		cmd := exec.Command("sh", "-s", "--", dir, units)
 		cmd.Stdin = strings.NewReader(installer)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("install: %v: %s", err, out)
@@ -61,9 +61,80 @@ esac
 		t.Fatalf("missing migration operations: %s", calls)
 	}
 	// A path pointing at the system binary directory must never be recursively chowned.
-	cmd := exec.Command("bash", "-s", "--", "/usr/local/bin", units)
+	cmd := exec.Command("sh", "-s", "--", "/usr/local/bin", units)
 	cmd.Stdin = strings.NewReader(installer)
 	if err := cmd.Run(); err == nil {
 		t.Fatal("accepted a shared system directory")
+	}
+}
+
+func TestNonSystemdAccountSetupUsesPortableTools(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, manager := range []string{"openrc", "procd"} {
+		t.Run(manager, func(t *testing.T) {
+			root := t.TempDir()
+			bin := filepath.Join(root, "bin")
+			if err := os.Mkdir(bin, 0755); err != nil {
+				t.Fatal(err)
+			}
+			events := filepath.Join(root, "events")
+			// Only BusyBox-style account commands are available on this PATH.
+			// Resolve the real filesystem tools before restricting the PATH.
+			for _, name := range []string{"mkdir", "cp", "mv", "chmod"} {
+				path, err := exec.LookPath(name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(path, filepath.Join(bin, name)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(bin, "awk"), []byte("#!/bin/sh\nexit 1\n"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			mock := `#!/bin/sh
+case "${0##*/}" in
+id) case "$*" in "-u") echo 0 ;; "-u remnanode") echo 10001 ;; *) exit 1 ;; esac ;;
+*) printf '%s %s\n' "${0##*/}" "$*" >> "$SERVICE_TEST_EVENTS" ;;
+esac
+`
+			for _, name := range []string{"id", "chown", "addgroup", "adduser", "systemctl"} {
+				if err := os.WriteFile(filepath.Join(bin, name), []byte(mock), 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dir, units := filepath.Join(root, "install"), filepath.Join(root, "units")
+			cmd := exec.Command(shell, "-s", "--", dir, units, "", manager)
+			cmd.Env = append(os.Environ(), "PATH="+bin, "SERVICE_TEST_EVENTS="+events)
+			cmd.Stdin = strings.NewReader(installer)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("setup: %v: %s", err, out)
+			}
+			data, err := os.ReadFile(events)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := string(data)
+			for _, operation := range []string{"addgroup -S remnanode", "adduser -S -D -H", "chown -hR remnanode:remnanode"} {
+				if !strings.Contains(calls, operation) {
+					t.Errorf("missing %s: %s", operation, calls)
+				}
+			}
+			if strings.Contains(calls, "systemctl") {
+				t.Fatalf("non-systemd setup called systemctl: %s", calls)
+			}
+			if _, err := os.Stat(units); !os.IsNotExist(err) {
+				t.Fatalf("non-systemd setup wrote systemd configuration: %v", err)
+			}
+		})
+	}
+}
+
+func TestRejectUnknownServiceManager(t *testing.T) {
+	if err := InstallForManager(t.TempDir(), t.TempDir(), "unknown"); err == nil {
+		t.Fatal("accepted an unknown service manager")
 	}
 }

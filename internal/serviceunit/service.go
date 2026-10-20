@@ -13,11 +13,22 @@ import (
 var installer string
 
 func Install(dir, unitDir string) error {
+	return InstallForManager(dir, unitDir, "systemd")
+}
+
+// InstallForManager shares account, ownership, core, and asset setup across the
+// supported supervisors. Only systemd receives unit files and path activation.
+func InstallForManager(dir, unitDir, manager string) error {
+	switch manager {
+	case "systemd", "openrc", "procd":
+	default:
+		return fmt.Errorf("unsupported service manager: %s", manager)
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("bash", "-s", "--", dir, unitDir, exe)
+	cmd := exec.Command("sh", "-s", "--", dir, unitDir, exe, manager)
 	cmd.Stdin = strings.NewReader(installer)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	return cmd.Run()
