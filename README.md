@@ -65,6 +65,133 @@ Candidate assets must include `checksums.txt`, `asn-prefixes.zip`, and the match
 these files without publishing a release. Publish only after the Validation
 workflow and a canary migration pass.
 
+## Configuration
+
+Place `.env` beside the executable or in `/opt/remnanode/.env`; explicitly set
+process environment values take precedence.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SECRET_KEY` | required | Panel-generated base64 certificate/JWT payload |
+| `NODE_PORT` | `3000` | TLS 1.3 management port; mTLS and RS256 JWT required |
+| `REMNANODE_RUNTIME_DIR` | `/run/remnanode` | Private configuration and CLI discovery directory |
+| `INTERNAL_REST_TOKEN` | random per process | Internal HTTP authentication; normally leave unset |
+| `INTERNAL_SOCKET_PATH` | random abstract name | Internal configuration/webhook socket |
+| `XTLS_API_SOCKET_PATH` | `/run/remnanode/xray.sock` | Xray gRPC endpoint |
+| `XRAY_CORE_PATH` | detected adjacent/system core | Explicit core executable |
+| `S6_COMMAND_DIR` | `/command` or PATH | Existing s6 command directory |
+| `XRAY_S6_SERVICE_DIR` | `/run/service/xray` | Existing supervised Xray service |
+| `XRAY_LOCATION_ASSET` | detected core asset directory | Geodata directory |
+| `ASN_INDEX_PATH` | `/usr/local/share/asn/asn-prefixes.zip` | Portable ASN index |
+| `SNI_VERIFICATION` | `false` | Require the panel-derived SNI, including on otherwise valid mTLS connections |
+| `NFTABLES_LOGGING` | `true` | Kernel firewall logging |
+| `NFTABLES_ACCEPT_REPLY_TRAFFIC` | `false` | Exempt connection reply traffic from ingress blocks |
+| `DISABLE_HASHED_SET_CHECK` | `false` | Force configuration synchronization to restart the core |
+
+Use a `0700` runtime directory owned by the service user. Configuration and CLI
+discovery files use `0600`. Existing explicit abstract Unix names remain
+supported. Explicit TCP management endpoints must use a loopback IP. Runtime
+configuration is never copied to `/etc/xray/config.json`. Daemon startup refuses
+UID 0. Configure s6 supervisors to run the node and Xray under the same
+unprivileged account, with ownership of their runtime/configuration directories;
+service capabilities must be provided by the container or supervisor.
+
+For a manual native systemd service:
+
+```ini
+[Unit]
+Description=Remnanode (Go)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=remnanode
+Group=remnanode
+WorkingDirectory=/opt/remnanode
+ExecStart=/opt/remnanode/remnanode
+RuntimeDirectory=remnanode
+RuntimeDirectoryMode=0700
+UMask=0077
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+```
+
+After creating the base unit, install the service account, hardening drop-in,
+and update/restart path units, then restart:
+
+```sh
+sudo /opt/remnanode/remnanode service install /opt/remnanode
+sudo systemctl enable remnanode
+sudo systemctl restart remnanode
+```
+
+`install.sh` applies this policy on every run. Existing root systemd services also
+migrate on the first startup of an upgraded binary, before opening any network
+listeners. A dedicated `remnanode` account keeps stable ownership of private
+runtime files, the core, geodata, and update backups; `DynamicUser` is disabled.
+The drop-in enables `ProtectSystem=strict`, `ProtectHome`, `PrivateDevices`,
+`PrivateTmp`, `NoNewPrivileges`, and `MemoryDenyWriteExecute`, and permits writes
+only to the installation and runtime directories. The node and Xray inherit only
+`CAP_NET_BIND_SERVICE`, `CAP_NET_ADMIN`, and `CAP_NET_RAW` for low ports, firewall
+operations/transparent proxying, and raw network probes. Managed core and geodata
+are kept under `/opt/remnanode`. Custom certificate/key files must be readable by
+`remnanode` outside home directories; additional write paths or device access
+require an administrator's systemd override.
+
+Firewall enforcement requires `nft`, `ss` from iproute2, and CAP_NET_ADMIN.
+Unavailable or failed enforcement is reported to the panel. Geocheck requires
+`/usr/local/bin/geocheck`; unsupported/missing capabilities return errors.
+
+## CLI and updates
+
+```sh
+remnanode status
+remnanode status --wait-ready
+remnanode logs -n 100 -f
+remnanode xlogs -n 100 -f
+remnanode restart
+remnanode update -y
+remnanode core install -y
+remnanode core install --version v26.7.28 -y
+remnanode core reset
+```
+
+CLI logs and status use the private discovery file, so run them as the service
+user (`sudo -u remnanode /opt/remnanode/remnanode status`, for example).
+Use the same account for CLI updates and core installs. Add PATH symlinks
+explicitly or use those installed by `install.sh`;
+executing the binary does not overwrite system binaries or links.
+
+Node updates default to `aaaSaZaN/remnanode-go`. Core installs default to the
+latest stable `XTLS/Xray-core` release. Explicit version requests never fall back
+to another version. Downloaded executables require a published SHA-256 digest
+or checksum manifest and are validated before replacement.
+
+Updates retain the preceding executable. Native HTTP updates use a separate
+unprivileged systemd service, activated by a private request file, to monitor
+restart/readiness and restore the preceding executable on failure. A separate
+path unit permits only a fixed restart of `remnanode.service`; only its fixed
+`systemctl` invocation uses the manager's UID, with an empty capability set.
+The node has no permission to manage arbitrary system units or run root code.
+CLI updates wait synchronously for restart. HTTP updates
+on an s6-only host require an external restart supervisor; without one, the
+endpoint rejects the update and restores the executable. Existing s6 Xray
+start/stop/configuration functionality is independent of that restriction. The
+recognized stock s6 run script is temporarily adapted to read the private JSON
+file, supporting cores without the Unix-HTTP loader; its original is restored on
+stop. Custom s6 scripts are preserved and should read that private file when
+using a core without Unix-HTTP configuration support.
+
+Custom core configuration uses the original `xrayConfig.geodata.core` URL and
+SHA-256 fields. `geodata.assets` prepares named external data files. A custom
+core is staged and configuration-validated before activation. Removing custom
+core configuration or running `core reset` restores the managed stock core.
+
 ## Compatibility and diagnostics
 
 All 25 original controller routes have contract fixtures. Compressed JSON
