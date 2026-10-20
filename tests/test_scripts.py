@@ -18,6 +18,7 @@ set -e
 case "$1" in
 version) echo 'Remnawave Node (Go) vtest' ;;
 core) printf '#!/bin/sh\\nexit 0\\n' > "$(dirname "$0")/rw-core"; chmod +x "$(dirname "$0")/rw-core" ;;
+service) bash "$REMNANODE_SERVICE_INSTALLER" "$3" "$4" ;;
 status) [ "${MOCK_READY:-1}" = 1 ] ;;
 esac
 '''
@@ -28,7 +29,8 @@ args=sys.argv[1:]
 root=pathlib.Path(os.environ['MOCK_ROOT'])
 with open(root/'events','a') as log:log.write(name+' '+' '.join(args)+'\\n')
 env=['SECRET_KEY=test','NODE_PORT=3000','NFTABLES_LOGGING=false','PATH=/usr/bin']
-if name=='id':print('0')
+if name=='id':print('10001' if 'remnanode' in args else '0')
+elif name in ('chown','getent','groupadd','useradd'):pass
 elif name=='uname':print('Linux' if args==['-s'] else os.environ.get('MOCK_MACHINE','x86_64'))
 elif name=='curl':
  url=next(a for a in args if a.startswith('https:'))
@@ -74,7 +76,7 @@ class ScriptTests(unittest.TestCase):
     def run_installer(self, root, runs=1, arch='amd64', manifest='checksums.txt', asn=True, corrupt=False, **environment):
         (root/'assets').mkdir()
         (root/'bin').mkdir()
-        for name in ['id','uname','docker','curl','systemctl','rc-service','rc-update','ss']:
+        for name in ['id','uname','docker','curl','systemctl','rc-service','rc-update','ss','chown','getent','groupadd','useradd']:
             script=root/'bin'/name
             script.write_text(MOCK)
             script.chmod(0o755)
@@ -91,6 +93,7 @@ class ScriptTests(unittest.TestCase):
         (assets/manifest).write_text(checksums)
         (assets/'geo-checksums.txt').write_text(checksums)
         env=dict(os.environ,PATH=str(root/'bin')+':'+os.environ['PATH'],MOCK_ROOT=str(root),REMNANODE_INIT='systemd',
+                 REMNANODE_SERVICE_INSTALLER=str(ROOT/'internal/serviceunit/install.sh'),
                  REMNANODE_INSTALL_DIR=str(root/'install'),REMNANODE_PREFIX=str(root/'prefix'),
                  REMNANODE_SYSTEMD_DIR=str(root/'units'),REMNANODE_INITD_DIR=str(root/'init.d'))
         env.pop('SECRET_KEY',None)
@@ -124,6 +127,13 @@ class ScriptTests(unittest.TestCase):
             self.assertNotIn('PATH=',settings)
             self.assertEqual((root/'install/.env').stat().st_mode&0o777,0o600)
             self.assertIn('ExecStart='+str(root/'install/remnanode'),(root/'units/remnanode.service').read_text())
+            policy=(root/'units/remnanode.service.d/90-unprivileged.conf').read_text()
+            for directive in ['User=remnanode','ProtectSystem=strict','ProtectHome=true','PrivateDevices=true','PrivateTmp=true','NoNewPrivileges=true','MemoryDenyWriteExecute=true','CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW']:
+                self.assertIn(directive,policy)
+            self.assertNotIn('User=root',(root/'units/remnanode.service').read_text())
+            self.assertIn('User=remnanode',(root/'units/remnanode-update.service').read_text())
+            self.assertIn('enable --now remnanode-restart.path remnanode-update.path',events)
+            self.assertIn('chown -hR remnanode:remnanode',events)
             self.assertIn('docker stop -t 10 old-node',events)
             self.assertEqual(os.readlink(root/'prefix/bin/remnanode'),str(root/'install/remnanode'))
             self.assertTrue((root/'prefix/share/asn/asn-prefixes.zip').exists())

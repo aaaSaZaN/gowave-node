@@ -5,4 +5,8 @@ COPY tests/smoke/run.py /smoke.py
 COPY install.sh /checks/install.sh
 COPY scripts/*.sh /checks/scripts/
 RUN ln -s /candidate/rw-core /usr/local/bin/rw-core && cp /candidate/*.dat /usr/local/bin/
+RUN groupadd --gid 10001 remnanode \
+    && useradd --uid 10001 --gid remnanode --no-create-home remnanode \
+    && chown -R remnanode:remnanode /candidate
+USER 10001:10001
 ENTRYPOINT ["python3", "/smoke.py"]

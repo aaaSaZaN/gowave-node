@@ -152,6 +152,17 @@ rollback() {
         if [ -f "$work/previous-node" ]; then put 0755 "$work/previous-node" "$install_dir/remnanode"; else rm -f -- "$install_dir/remnanode"; fi
         if [ -f "$work/previous-env" ]; then put 0600 "$work/previous-env" "$install_dir/.env"; else rm -f -- "$install_dir/.env"; fi
         if [ -f "$work/previous-service" ]; then put "$service_mode" "$work/previous-service" "$service_file"; else rm -f -- "$service_file"; fi
+        if [ "$init" = systemd ]; then
+            systemctl disable --now remnanode-restart.path remnanode-update.path 2>/dev/null || true
+            for policy in remnanode.service.d/90-unprivileged.conf remnanode-restart.path remnanode-restart.service remnanode-update.path remnanode-update.service; do
+                rm -f -- "$(dirname "$service_file")/$policy"
+                if [ -f "$work/policy/$policy" ]; then
+                    mkdir -p "$(dirname "$(dirname "$service_file")/$policy")"
+                    cp "$work/policy/$policy" "$(dirname "$service_file")/$policy"
+                fi
+            done
+            if [ "$previous_paths" = true ]; then systemctl enable --now remnanode-restart.path remnanode-update.path || true; fi
+        fi
         svc reload
         if [ "$switched" = true ] && [ "$was_running" = true ]; then
             docker update --restart="$restart_policy" "$container"
@@ -170,6 +181,16 @@ trap 'exit 143' TERM
 
 mkdir -p "$install_dir" "$prefix/bin" "$(dirname "$service_file")"
 if [ -f "$service_file" ]; then cp "$service_file" "$work/previous-service"; fi
+previous_paths=false
+if [ "$init" = systemd ]; then
+    if [ -f "$(dirname "$service_file")/remnanode-restart.path" ] && [ -f "$(dirname "$service_file")/remnanode-update.path" ]; then previous_paths=true; fi
+    for policy in remnanode.service.d/90-unprivileged.conf remnanode-restart.path remnanode-restart.service remnanode-update.path remnanode-update.service; do
+        if [ -f "$(dirname "$service_file")/$policy" ]; then
+            mkdir -p "$work/policy/$(dirname "$policy")"
+            cp "$(dirname "$service_file")/$policy" "$work/policy/$policy"
+        fi
+    done
+fi
 if svc enabled; then previous_enabled=true; fi
 if svc active; then native_running=true; fi
 if [ -f "$install_dir/.env" ]; then cp "$install_dir/.env" "$work/previous-env"; fi
@@ -333,6 +354,12 @@ if [ ! -x "$install_dir/rw-core" ] && [ ! -x "$prefix/bin/rw-core" ]; then
     "$install_dir/remnanode" core install -y
 fi
 put "$service_mode" "$work/service" "$service_file"
+if [ "$init" = systemd ]; then
+    # The binary embeds the service-account setup and systemd hardening policy.
+    # Keep install.sh portable while sharing the same policy used by native
+    # upgrades and legacy-service migration.
+    "$install_dir/remnanode" service install "$install_dir" "$(dirname "$service_file")"
+fi
 svc reload
 svc enable
 started=$(date +%s)

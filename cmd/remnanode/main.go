@@ -26,6 +26,7 @@ import (
 	"github.com/remnawave/node-go/internal/lock"
 	"github.com/remnawave/node-go/internal/logger"
 	"github.com/remnawave/node-go/internal/plugin"
+	"github.com/remnawave/node-go/internal/serviceunit"
 	"github.com/remnawave/node-go/internal/stats"
 	"github.com/remnawave/node-go/internal/tlsutil"
 	"github.com/remnawave/node-go/internal/updater"
@@ -48,6 +49,34 @@ func main() {
 			return
 		case "logs", "nodelogs":
 			cli.RunLogsCLI("node", os.Args[2:])
+			return
+		case "service":
+			if len(os.Args) < 3 || len(os.Args) > 5 || os.Args[2] != "install" {
+				log.Fatal("Usage: remnanode service install [directory] [unit-directory]")
+			}
+			exe, err := os.Executable()
+			if err != nil {
+				log.Fatal(err)
+			}
+			dir, unitDir := filepath.Dir(exe), "/etc/systemd/system"
+			if len(os.Args) >= 4 {
+				dir = os.Args[3]
+			}
+			if len(os.Args) >= 5 {
+				unitDir = os.Args[4]
+			}
+			if err := serviceunit.Install(dir, unitDir); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "_finish-pending-update":
+			request, err := updater.ReadUpdateRequest()
+			if err != nil {
+				log.Fatal(err)
+			}
+			if err := cli.CompleteUpdate(request.Target, request.Core, request.PID); err != nil {
+				log.Fatal(err)
+			}
 			return
 		case "_finish-update":
 			cleanup := func() {
@@ -95,6 +124,15 @@ func main() {
 		}
 	}
 
+	if migrated, err := serviceunit.MigrateLegacy(); migrated {
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if os.Geteuid() == 0 {
+		log.Fatal("Run the node as an unprivileged user; install the native service or configure the supervisor user.")
+	}
 	xrayRingBuffer := logger.NewRingBuffer(5000)
 	nodeRingBuffer := logger.NewRingBuffer(5000)
 
