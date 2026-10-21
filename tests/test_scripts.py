@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Run installer scenarios using only a temporary filesystem and mocks."""
 import hashlib
-import io
 import json
 import os
 import pathlib
 import subprocess
-import tarfile
 import tempfile
 import unittest
 import zipfile
@@ -45,7 +43,6 @@ elif name=='uname':print('Linux' if args==['-s'] else os.environ.get('MOCK_MACHI
 elif name=='curl':
  url=next(a for a in args if a.startswith('https:'))
  asset=url.rsplit('/',1)[1]
- if asset=='checksums.txt' and '/geocheck/' in url:asset='geo-checksums.txt'
  source=root/'assets'/asset
  if not source.exists():sys.exit(22)
  pathlib.Path(args[args.index('-o')+1]).write_bytes(source.read_bytes())
@@ -115,13 +112,10 @@ esac
         if asn:
             with zipfile.ZipFile(assets/'asn-prefixes.zip','w') as archive:
                 archive.writestr('64500.json','{"ipv4":[],"ipv6":[]}')
-        with tarfile.open(assets/'geocheck_linux_amd64.tar.gz','w:gz') as archive:
-            entry=tarfile.TarInfo('geocheck');entry.mode=0o755;content=b'#!/bin/sh\nexit 0\n';entry.size=len(content);archive.addfile(entry,io.BytesIO(content))
         checksums=''.join(hashlib.sha256(file.read_bytes()).hexdigest()+'  '+file.name+'\n' for file in sorted(assets.iterdir()))
         if corrupt:
             checksums=checksums.replace(hashlib.sha256(NODE).hexdigest(),'0'*64)
         (assets/manifest).write_text(checksums)
-        (assets/'geo-checksums.txt').write_text(checksums)
         env=dict(os.environ,PATH=str(root/'bin')+':'+os.environ['PATH'],MOCK_ROOT=str(root),REMNANODE_INIT='systemd',
                  REMNANODE_SERVICE_INSTALLER=str(ROOT/'internal/serviceunit/install.sh'),
                  REMNANODE_INSTALL_DIR=str(root/'install'),REMNANODE_PREFIX=str(root/'prefix'),

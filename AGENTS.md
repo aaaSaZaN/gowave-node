@@ -147,8 +147,10 @@ candidate. `.smoke/`, `dist/`, and root build outputs are ignored artifacts.
   call. A listening management server or cached health response alone is not
   equivalent to readiness.
 - Firewall enforcement needs `nft`, iproute2 `ss`, and CAP_NET_ADMIN; geocheck
-  needs `/usr/local/bin/geocheck`. Missing capabilities are error cases. Smoke
-  containers drop all capabilities and do not certify real firewall enforcement.
+  uses `/usr/local/bin/geocheck` when present, otherwise it downloads the pinned
+  release (linux amd64/arm64 only) for each run and removes it. Missing
+  capabilities are error cases. Smoke containers drop all capabilities and do
+  not certify real firewall enforcement.
 - `install.sh` is the single root installer/updater/migrator for systemd, OpenRC,
   and OpenWrt procd. It is POSIX sh and must keep working under BusyBox ash and
   dash with only curl/wget and a SHA-256 tool. It can stop Docker and change

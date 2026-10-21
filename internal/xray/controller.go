@@ -125,6 +125,7 @@ func (c *Controller) HandleStart(w http.ResponseWriter, r *http.Request) {
 	}
 	full := GenerateApiConfig(req.XrayConfig, TorrentBlockerState{Enabled: enabled, IncludeRuleTags: tags, RulePosition: position}, InternalConfig{SocketPath: c.cfg.InternalSocketPath, Token: c.cfg.InternalRestToken, XtlsApiSocketPath: c.cfg.XtlsApiSocketPath}, updater.HasNetAdmin())
 	if err := c.process.ValidateConfig(r.Context(), full); err != nil {
+		log.Printf("[XRAY] new config rejected, the running core keeps the previous one: %v", err)
 		c.startResponse(w, false, err)
 		return
 	}

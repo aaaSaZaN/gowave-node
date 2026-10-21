@@ -79,6 +79,20 @@ func checksumFromManifest(data []byte, name string) (string, error) {
 	}
 	return "", errors.New("SHA-256 entry missing for " + name)
 }
+
+// FetchPinnedTarGzExecutable downloads a .tar.gz archive, checks it against
+// the expected SHA-256 and extracts binaryName from it to dest.
+func FetchPinnedTarGzExecutable(ctx context.Context, raw, sha256Hex, binaryName, dest string) error {
+	data, err := fetchBytes(ctx, raw, MaxArtifactSize)
+	if err != nil {
+		return err
+	}
+	if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != sha256Hex {
+		return errors.New("artifact checksum mismatch")
+	}
+	_, err = extractTarGz(data, binaryName, dest)
+	return err
+}
 func DownloadReleaseBinary(release ReleaseInfo, asset ReleaseAsset, name string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

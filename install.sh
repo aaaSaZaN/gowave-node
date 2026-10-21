@@ -307,15 +307,6 @@ if fetch "$base/asn-prefixes.zip" "$work/asn-prefixes.zip" 2>/dev/null; then
 else
     log 'This release has no ASN index; ASN-based plugin lists stay unavailable.'
 fi
-if { [ "$arch" = amd64 ] || [ "$arch" = arm64 ]; } && have tar; then
-    geo_asset=geocheck_linux_$arch.tar.gz
-    geo_base=https://github.com/remnawave/geocheck/releases/download/v0.3.0
-    fetch "$geo_base/checksums.txt" "$work/geo-checksums.txt"
-    fetch "$geo_base/$geo_asset" "$work/$geo_asset"
-    verify "$work/geo-checksums.txt" "$geo_asset"
-    tar -xzf "$work/$geo_asset" -C "$work" geocheck
-    put 0755 "$work/geocheck" "$prefix/bin/geocheck"
-fi
 
 if [ "$init" = systemd ]; then
     cat > "$work/service" <<UNIT
