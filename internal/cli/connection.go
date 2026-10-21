@@ -26,6 +26,10 @@ func internalClient() (client *http.Client, token string, err error) {
 	return &http.Client{Transport: transport, Timeout: 3 * time.Second}, url.QueryEscape(d.Token), nil
 }
 func Ready(core bool) bool {
+	return ready(context.Background(), core)
+}
+
+func ready(ctx context.Context, core bool) bool {
 	client, token, err := internalClient()
 	if err != nil {
 		return false
@@ -35,7 +39,11 @@ func Ready(core bool) bool {
 	if core {
 		path = "ready?"
 	}
-	res, err := client.Get("http://unix/internal/" + path + "&token=" + token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://unix/internal/"+path+"&token="+token, nil)
+	if err != nil {
+		return false
+	}
+	res, err := client.Do(req)
 	if err != nil {
 		return false
 	}
@@ -43,13 +51,17 @@ func Ready(core bool) bool {
 	return res.StatusCode == 200
 }
 func WaitReady(core bool, timeout time.Duration, oldPID int) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	for ctx.Err() == nil {
 		d, err := config.ReadDiscovery()
-		if err == nil && (oldPID == 0 || d.PID != oldPID) && Ready(core) {
+		if err == nil && (oldPID == 0 || d.PID != oldPID) && ready(ctx, core) {
 			return nil
 		}
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
 	return fmt.Errorf("node readiness timed out after %s", timeout)
 }

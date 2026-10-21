@@ -2,11 +2,63 @@ package cli
 
 import (
 	"errors"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/aaaSaZaN/gowave-node/internal/config"
 )
+
+func readinessServer(t *testing.T, handler http.HandlerFunc) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("GOWAVE_NODE_RUNTIME_DIR", dir)
+	socket := filepath.Join(dir, "internal.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: handler}
+	t.Cleanup(func() { server.Close() })
+	go server.Serve(listener)
+	if err := config.SaveDiscovery(&config.Config{InternalSocketPath: socket, InternalRestToken: "test"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWaitRunningWithoutPanelConfiguration(t *testing.T) {
+	readinessServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("token") != "test" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path == "/internal/ready" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	})
+	if err := WaitReady(false, time.Second, 0); err != nil {
+		t.Fatalf("daemon running without configuration: %v", err)
+	}
+	if Ready(true) {
+		t.Fatal("unconfigured core reported ready")
+	}
+}
+
+func TestWaitReadyDeadlineCancelsUnresponsiveDaemon(t *testing.T) {
+	readinessServer(t, func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	})
+	start := time.Now()
+	if err := WaitReady(false, 50*time.Millisecond, 0); err == nil {
+		t.Fatal("unresponsive daemon reported running")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("readiness request exceeded deadline: %s", elapsed)
+	}
+}
 
 func TestUpdateFailureRestoresPreviousExecutable(t *testing.T) {
 	dir := t.TempDir()

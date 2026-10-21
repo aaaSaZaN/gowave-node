@@ -101,6 +101,13 @@ func main() {
 			}
 			return
 		case "status":
+			if len(os.Args) > 2 && os.Args[2] == "--wait-running" {
+				if err := cli.WaitReady(false, 30*time.Second, 0); err != nil {
+					log.Print(err)
+					os.Exit(1)
+				}
+				return
+			}
 			if len(os.Args) > 2 && os.Args[2] == "--wait-ready" {
 				if err := cli.WaitReady(true, 120*time.Second, 0); err != nil {
 					log.Print(err)

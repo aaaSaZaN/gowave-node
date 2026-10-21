@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install, update, or migrate a native gowave-node node.
 #
-#   sudo sh -c "$(curl -fsSL https://raw.githubusercontent.com/aaaSaZaN/gowave-node/main/install.sh)"
+#   sudo sh -c "$(curl -fsSL --connect-timeout 15 --max-time 60 https://raw.githubusercontent.com/aaaSaZaN/gowave-node/main/install.sh)"
 #
 # The same command installs a fresh node, updates an existing native node, or
 # migrates a Docker node container, keeping its environment. Docker is
@@ -22,9 +22,10 @@ for command in awk mktemp od dd; do
     have "$command" || fail "Required command missing: $command"
 done
 if have curl; then
-    fetch() { curl -fsSL --retry 3 -o "$2" "$1"; }
+    fetch() { curl -fsSL --connect-timeout 15 --max-time 180 --retry 2 --retry-max-time 180 -o "$2" "$1" </dev/null; }
 elif have wget; then
-    fetch() { wget -q -O "$2" "$1"; }
+    # BusyBox wget supports -T but not GNU wget's retry options.
+    fetch() { wget -q -T 30 -O "$2" "$1" </dev/null; }
 else
     fail 'Required command missing: curl or wget'
 fi
@@ -265,8 +266,6 @@ elif [ -f "$work/previous-env" ]; then cp "$work/previous-env" "$work/env"
 elif [ -n "$container" ]; then cp "$work/docker-env.filtered" "$work/env"
 else : > "$work/env"
 fi
-fresh=true
-if [ -n "$container" ] || [ -f "$work/previous-env" ]; then fresh=false; fi
 secret=$(env_get SECRET_KEY)
 [ -n "$secret" ] || secret=${SECRET_KEY:-}
 [ -n "$secret" ] || secret=$(ask 'Paste SECRET_KEY from the panel node settings: ')
@@ -275,7 +274,6 @@ secret=$(unquote "$secret" SECRET_KEY)
 case $secret in *[!A-Za-z0-9+/=_-]*) fail 'SECRET_KEY must be the base64 value shown by the panel.' ;; esac
 port=$(env_get NODE_PORT)
 [ -n "$port" ] || port=${NODE_PORT:-}
-if [ -z "$port" ] && [ "$fresh" = true ]; then port=$(ask 'NODE_PORT [3000]: '); fi
 port=$(unquote "${port:-3000}" NODE_PORT)
 case $port in ''|*[!0-9]*) fail "Invalid NODE_PORT: $port" ;; esac
 if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then fail "Invalid NODE_PORT: $port"; fi
@@ -422,25 +420,16 @@ fi
 svc restart
 if [ "$was_running" = true ] || [ "$native_running" = true ]; then
     log 'Waiting up to 2 minutes for the node to become ready...'
-else
-    # Readiness needs the panel to connect, which it does only once the node
-    # is added there; without this line the wait looks like a hang.
-    log "Waiting up to 2 minutes for the panel to connect. If the node is not added in the panel yet, add it now with port $port."
-fi
-if "$install_dir/gowave-node" status --wait-ready; then
-    complete=true
+    "$install_dir/gowave-node" status --wait-ready || fail 'The node did not become ready.'
     log "Node is ready; measured switch-to-Xray-readiness time: $(( $(date +%s) - started )) seconds."
-elif [ "$was_running" = true ] || [ "$native_running" = true ]; then
-    fail 'The node did not become ready.'
 else
-    complete=true
-    if port_busy "$port"; then
-        log 'Installed and running, but the panel has not sent a configuration yet.'
-        log 'Check that the node is added in the panel, then run: gowave-node status'
-    else
-        log "Installed, but the node is not listening on port $port. Check its log: gowave-node status"
-    fi
+    # The daemon starts without Xray configuration. Do not hold the installer
+    # open waiting for the panel to configure it for the first time.
+    log 'Waiting up to 30 seconds for the management daemon to start...'
+    "$install_dir/gowave-node" status --wait-running || fail 'The management daemon did not start. Check: gowave-node status'
+    log "Installed and running. Add the node in the panel with port $port to start Xray."
 fi
+complete=true
 for name in gowave-node xlogs; do
     destination=$prefix/bin/$name
     if [ ! -e "$destination" ] || [ -L "$destination" ]; then ln -sfn "$install_dir/gowave-node" "$destination"; fi

@@ -69,6 +69,9 @@ try:
         except Exception:
             if time.monotonic()>deadline: raise
             time.sleep(.1)
+    # Installation must finish while the daemon is still waiting for its first
+    # panel configuration; exercise the actual CLI instead of a shell mock.
+    subprocess.run([str(candidate/'gowave-node'),'status','--wait-running'],env=environment,cwd=candidate,check=True,timeout=5)
     configuration = {'internals': {'hashes': {'emptyConfig':'smoke','inbounds':[{'tag':'in','hash':'0000000000000000','usersCount':0}]}}, 'xrayConfig': {'inbounds':[{'tag':'in','listen':'127.0.0.1','port':free_port(),'protocol':'vless','settings':{'clients':[],'decryption':'none'}}], 'outbounds':[{'tag':'direct','protocol':'freedom'}]}}
     started = call('xray/start',configuration)
     assert started['isStarted'], started

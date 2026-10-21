@@ -17,11 +17,15 @@ One command installs a fresh node, updates a native node, or migrates a Docker
 node container:
 
 ```sh
-sudo sh -c "$(curl -fsSL https://raw.githubusercontent.com/aaaSaZaN/gowave-node/main/install.sh)"
+sudo sh -c "$(curl -fsSL --connect-timeout 15 --max-time 60 https://raw.githubusercontent.com/aaaSaZaN/gowave-node/main/install.sh)"
 ```
 
-A fresh install asks for the `SECRET_KEY` from the node settings in the panel and
-for `NODE_PORT`. The script is POSIX sh and supports systemd, OpenRC, and OpenWrt
+A fresh install asks for the `SECRET_KEY` from the node settings in the panel.
+`NODE_PORT` defaults to `3000`; export it to select another port. The installer
+returns once the management daemon responds (up to 30 seconds), so the panel
+can be configured afterwards. Updates and migrations wait up to two minutes
+for Xray readiness and restore the previous service on failure. The script is
+POSIX sh and supports systemd, OpenRC, and OpenWrt
 procd on amd64, 386, arm64, ARMv7/v6/v5, RISC-V, and MIPS.
 
 When replacing an installation with a different service name, stop and disable
@@ -156,6 +160,7 @@ Unavailable or failed enforcement is reported to the panel. Geocheck requires
 
 ```sh
 gowave-node status
+gowave-node status --wait-running
 gowave-node status --wait-ready
 gowave-node logs -n 100 -f
 gowave-node xlogs -n 100 -f

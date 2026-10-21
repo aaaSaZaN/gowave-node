@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Run installer scenarios using only a temporary filesystem and mocks."""
 import hashlib
+import fcntl
 import json
 import os
 import pathlib
+import pty
 import subprocess
 import tempfile
+import termios
 import unittest
 import zipfile
 
@@ -17,7 +20,13 @@ case "$1" in
 version) echo 'gowave-node vtest' ;;
 core) printf '#!/bin/sh\\nexit 0\\n' > "$(dirname "$0")/rw-core"; chmod +x "$(dirname "$0")/rw-core" ;;
 service) sh "$GOWAVE_NODE_SERVICE_INSTALLER" "$3" "$4" "" "${5:-systemd}" ;;
-status) [ "${MOCK_READY:-1}" = 1 ] ;;
+status)
+    printf 'node status %s\\n' "$2" >> "$MOCK_ROOT/events"
+    case "$2" in
+        --wait-running) [ "${MOCK_RUNNING:-1}" = 1 ] ;;
+        --wait-ready) [ "${MOCK_READY:-1}" = 1 ] ;;
+        *) exit 1 ;;
+    esac ;;
 esac
 '''
 MOCK = '''#!/usr/bin/env python3
@@ -84,7 +93,7 @@ class ScriptTests(unittest.TestCase):
             with zipfile.ZipFile(archive) as result:
                 self.assertEqual(json.loads(result.read('64500.json'))['ipv4'], ['192.0.2.0/24'])
 
-    def run_installer(self, root, runs=1, arch='amd64', manifest='checksums.txt', asn=True, corrupt=False, **environment):
+    def run_installer(self, root, runs=1, arch='amd64', manifest='checksums.txt', asn=True, corrupt=False, terminal=False, **environment):
         (root/'assets').mkdir()
         (root/'bin').mkdir()
         for name in ['id','uname','docker','curl','systemctl','rc-service','rc-update','ss','chown','getent','groupadd','useradd','cp','ujail']:
@@ -125,8 +134,19 @@ esac
         env.pop('NODE_PORT',None)
         env.update(environment)
         for _ in range(runs):
-            # A new session has no controlling terminal, so the installer cannot prompt.
-            result=subprocess.run(['sh',str(INSTALLER)],env=env,capture_output=True,text=True,start_new_session=True)
+            if terminal:
+                master, slave = pty.openpty()
+                def attach_terminal():
+                    os.setsid()
+                    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+                try:
+                    result=subprocess.run(['sh',str(INSTALLER)],env=env,stdin=slave,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,preexec_fn=attach_terminal,timeout=20)
+                finally:
+                    os.close(master)
+                    os.close(slave)
+            else:
+                # A new session has no controlling terminal, so the installer cannot prompt.
+                result=subprocess.run(['sh',str(INSTALLER)],env=env,capture_output=True,text=True,start_new_session=True,timeout=20)
             if result.returncode:
                 break
         events=(root/'events').read_text() if (root/'events').exists() else ''
@@ -175,6 +195,7 @@ esac
             result,events=self.run_installer(root,MOCK_DOCKER_IMAGE='ghcr.io/aaaSaZaN/gowave-node:latest')
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             self.assertIn('docker stop -t 10 old-node',events)
+            self.assertIn('node status --wait-ready',events)
             self.assertIn('https://github.com/aaaSaZaN/gowave-node/releases/latest/download/gowave-node-linux-amd64',events)
 
     def test_migration_restart_failure_rollback(self):
@@ -182,14 +203,24 @@ esac
             root=pathlib.Path(directory)
             self.assert_rolled_back(root,*self.run_installer(root,MOCK_RESTART_FAIL='1'))
 
-    def test_fresh_install_waits_for_panel(self):
+    def test_fresh_install_finishes_without_panel_configuration(self):
         with tempfile.TemporaryDirectory() as directory:
             root=pathlib.Path(directory)
             result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_READY='0',SECRET_KEY=' SECRET_KEY="abc+/=" ',NODE_PORT='2222')
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-            self.assertIn('panel has not sent a configuration',result.stdout)
+            self.assertIn('Add the node in the panel with port 2222',result.stdout)
+            self.assertIn('node status --wait-running',events)
+            self.assertNotIn('node status --wait-ready',events)
             self.assertEqual((root/'install/.env').read_text(),'SECRET_KEY=abc+/=\nNODE_PORT=2222\n')
             self.assertNotIn('docker stop',events)
+
+    def test_fresh_install_with_terminal_does_not_prompt_for_default_port(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            result,events=self.run_installer(root,terminal=True,MOCK_DOCKER='0',MOCK_READY='0',SECRET_KEY='abc')
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertIn('NODE_PORT=3000',(root/'install/.env').read_text())
+            self.assertIn('node status --wait-running',events)
 
     def test_fresh_install_requires_secret(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -319,13 +350,15 @@ esac
             self.assertFalse((root/'units/gowave-node.service').exists())
         self.assertFalse((root/'units/gowave-node.service.d/90-unprivileged.conf').exists())
 
-    def test_fresh_install_reports_node_not_listening(self):
+    def test_fresh_install_rolls_back_when_daemon_does_not_start(self):
         with tempfile.TemporaryDirectory() as directory:
             root=pathlib.Path(directory)
-            result,_=self.run_installer(root,MOCK_DOCKER='0',MOCK_READY='0',MOCK_LISTENS='0',SECRET_KEY='abc',NODE_PORT='2222')
-            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-            self.assertIn('not listening on port 2222',result.stdout)
-            self.assertNotIn('panel has not sent a configuration',result.stdout)
+            result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_RUNNING='0',SECRET_KEY='abc',NODE_PORT='2222')
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('management daemon did not start',result.stdout+result.stderr)
+            self.assertIn('systemctl stop gowave-node',events)
+            self.assertFalse((root/'install/gowave-node').exists())
+            self.assertFalse((root/'units/gowave-node.service').exists())
 
 
 if __name__=='__main__':unittest.main()
