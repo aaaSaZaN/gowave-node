@@ -4,6 +4,19 @@ set -eu
 install_dir=$1
 unit_dir=${2:-/etc/systemd/system}
 manager=${4:-systemd}
+service_user=${GOWAVE_NODE_SERVICE_USER:-gowave-node}
+case $service_user in ''|-*|*[!a-zA-Z0-9_-]*|root) echo 'Use an unprivileged service account name.' >&2; exit 1 ;; esac
+runtime_dir=${GOWAVE_NODE_RUNTIME_DIR:-/run/gowave-node}
+case $runtime_dir in
+    /*) ;;
+    *) echo 'Runtime path must be absolute.' >&2; exit 1 ;;
+esac
+case $runtime_dir in
+    /|/run|/var|/var/run|/var/lib|/var/log|/tmp|/opt|/etc|/usr|/usr/local|/dev|/proc|/sys|/home|/root|*/..|*/../*|*/.|*/./*|*[!a-zA-Z0-9_./-]*)
+        echo 'Use a dedicated runtime directory with a simple path.' >&2; exit 1 ;;
+esac
+runtime_name=gowave-node
+case $runtime_dir in /run/*) runtime_name=${runtime_dir#/run/} ;; esac
 case "$manager" in systemd|openrc|procd) ;; *) echo 'Unsupported service manager.' >&2; exit 1 ;; esac
 have() { command -v "$1" >/dev/null 2>&1; }
 [ "$(id -u)" -eq 0 ] || { echo 'Service installation requires root.' >&2; exit 1; }
@@ -29,25 +42,25 @@ if [ -n "${3:-}" ] && [ "$3" != "$install_dir/gowave-node" ]; then
     mv -f "$install_dir/gowave-node.new" "$install_dir/gowave-node"
 fi
 group_exists() {
-    if have getent; then getent group gowave-node >/dev/null
-    else awk -F: '$1 == "gowave-node" { found=1 } END { exit !found }' /etc/group
+    if have getent; then getent group "$service_user" >/dev/null
+    else awk -F: -v name="$service_user" '$1 == name { found=1 } END { exit !found }' /etc/group
     fi
 }
 if ! group_exists; then
-    if have groupadd; then groupadd --system gowave-node
-    elif have addgroup; then addgroup -S gowave-node
+    if have groupadd; then groupadd --system "$service_user"
+    elif have addgroup; then addgroup -S "$service_user"
     else echo 'Install groupadd or BusyBox addgroup before installing the node.' >&2; exit 1
     fi
 fi
-if ! id gowave-node >/dev/null 2>&1; then
+if ! id "$service_user" >/dev/null 2>&1; then
     if have useradd; then
-        useradd --system --gid gowave-node --home-dir "$install_dir" --no-create-home --shell /bin/false gowave-node
+        useradd --system --gid "$service_user" --home-dir "$install_dir" --no-create-home --shell /bin/false "$service_user"
     elif have adduser; then
-        adduser -S -D -H -h "$install_dir" -s /bin/false -G gowave-node gowave-node
+        adduser -S -D -H -h "$install_dir" -s /bin/false -G "$service_user" "$service_user"
     else echo 'Install useradd or BusyBox adduser before installing the node.' >&2; exit 1
     fi
 fi
-[ "$(id -u gowave-node)" -ne 0 ] || { echo 'Refusing a service account with UID 0.' >&2; exit 1; }
+[ "$(id -u "$service_user")" -ne 0 ] || { echo 'Refusing a service account with UID 0.' >&2; exit 1; }
 # Put the managed core and mutable geodata inside the writable installation.
 if [ ! -f "$install_dir/rw-core" ]; then
     for core in "${XRAY_CORE_PATH:-}" "$install_dir/xray" /usr/local/bin/rw-core /usr/local/bin/xray; do
@@ -72,10 +85,21 @@ for asset in geoip.dat geosite.dat; do
     fi
 done
 # Persistent ownership is required for self-updates and private database/runtime files.
-chown -hR gowave-node:gowave-node "$install_dir"
+chown -hR "$service_user:$service_user" "$install_dir"
 chmod 0750 "$install_dir"
 [ ! -L "$install_dir/.env" ] || { echo "Refusing a symlinked .env" >&2; exit 1; }
 [ ! -f "$install_dir/.env" ] || chmod 0600 "$install_dir/.env"
+# RuntimeDirectory handles /run paths, including retained legacy paths. Other
+# explicitly configured directories must exist before the systemd sandbox starts.
+case $runtime_dir in
+    /run/*) ;;
+    *)
+        [ ! -L "$runtime_dir" ] || { echo 'Refusing a symlinked runtime directory.' >&2; exit 1; }
+        mkdir -p "$runtime_dir"
+        chown "$service_user:$service_user" "$runtime_dir"
+        chmod 0700 "$runtime_dir"
+        ;;
+esac
 # OpenRC/procd provide the runtime directory and capability policy at startup.
 [ "$manager" = systemd ] || exit 0
 mkdir -p "$unit_dir/gowave-node.service.d"
@@ -83,8 +107,8 @@ policy=$(mktemp "$unit_dir/gowave-node.service.d/.hardening.XXXXXX")
 trap 'rm -f -- "$policy"' EXIT
 cat > "$policy" <<UNIT
 [Service]
-User=gowave-node
-Group=gowave-node
+User=$service_user
+Group=$service_user
 WorkingDirectory=$install_dir
 ExecStart=
 ExecStart=$install_dir/gowave-node
@@ -101,8 +125,8 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 UMask=0077
-ReadWritePaths=$install_dir
-RuntimeDirectory=gowave-node
+ReadWritePaths=$install_dir $runtime_dir
+RuntimeDirectory=$runtime_name
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 Restart=always
@@ -113,7 +137,7 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 UNIT
 cat >> "$policy" <<UNIT
 Environment=GOWAVE_NODE_MANAGED_SERVICE=1
-Environment=GOWAVE_NODE_RUNTIME_DIR=/run/gowave-node
+Environment=GOWAVE_NODE_RUNTIME_DIR=$runtime_dir
 Environment=XRAY_CORE_PATH=$install_dir/rw-core
 Environment=XRAY_LOCATION_ASSET=$install_dir
 UNIT
@@ -123,7 +147,7 @@ cat > "$unit_dir/gowave-node-restart.path" <<UNIT
 [Unit]
 Description=Watch for an unprivileged gowave-node restart request
 [Path]
-PathExists=/run/gowave-node/restart-request
+PathExists=$runtime_dir/restart-request
 Unit=gowave-node-restart.service
 [Install]
 WantedBy=multi-user.target
@@ -133,9 +157,9 @@ cat > "$unit_dir/gowave-node-restart.service" <<UNIT
 Description=Restart only the gowave-node service
 [Service]
 Type=oneshot
-User=gowave-node
-Group=gowave-node
-ExecStart=/bin/rm -f /run/gowave-node/restart-request
+User=$service_user
+Group=$service_user
+ExecStart=/bin/rm -f $runtime_dir/restart-request
 # Only this fixed systemctl command uses the manager's UID, within the sandbox.
 ExecStart=!/bin/systemctl restart gowave-node.service
 ProtectSystem=strict
@@ -151,13 +175,13 @@ RestrictSUIDSGID=true
 LockPersonality=true
 UMask=0077
 CapabilityBoundingSet=
-ReadWritePaths=/run/gowave-node
+ReadWritePaths=$runtime_dir
 UNIT
 cat > "$unit_dir/gowave-node-update.path" <<UNIT
 [Unit]
 Description=Watch for an unprivileged gowave-node update monitor request
 [Path]
-PathExists=/run/gowave-node/update-request.json
+PathExists=$runtime_dir/update-request.json
 Unit=gowave-node-update.service
 [Install]
 WantedBy=multi-user.target
@@ -167,12 +191,12 @@ cat > "$unit_dir/gowave-node-update.service" <<UNIT
 Description=Monitor gowave-node update readiness and rollback
 [Service]
 Type=oneshot
-User=gowave-node
-Group=gowave-node
+User=$service_user
+Group=$service_user
 WorkingDirectory=$install_dir
 ExecStart=$install_dir/.update-monitor _finish-pending-update
 Environment=GOWAVE_NODE_MANAGED_SERVICE=1
-Environment=GOWAVE_NODE_RUNTIME_DIR=/run/gowave-node
+Environment=GOWAVE_NODE_RUNTIME_DIR=$runtime_dir
 ProtectSystem=strict
 ProtectHome=true
 PrivateDevices=true
@@ -186,11 +210,13 @@ RestrictSUIDSGID=true
 LockPersonality=true
 UMask=0077
 CapabilityBoundingSet=
-ReadWritePaths=$install_dir /run/gowave-node
+ReadWritePaths=$install_dir $runtime_dir
 TimeoutStartSec=300
 UNIT
 chmod 0644 "$policy"
 mv -f "$policy" "$unit_dir/gowave-node.service.d/90-unprivileged.conf"
 trap - EXIT
 systemctl daemon-reload
-systemctl enable --now gowave-node-restart.path gowave-node-update.path
+if [ "${GOWAVE_NODE_DEFER_PATHS:-0}" != 1 ]; then
+    systemctl enable --now gowave-node-restart.path gowave-node-update.path
+fi

@@ -30,13 +30,13 @@ status)
 esac
 '''
 MOCK = '''#!/usr/bin/env python3
-import os,pathlib,subprocess,sys
+import json,os,pathlib,subprocess,sys
 name=pathlib.Path(sys.argv[0]).name
 args=sys.argv[1:]
 root=pathlib.Path(os.environ['MOCK_ROOT'])
 with open(root/'events','a') as log:log.write(name+' '+' '.join(args)+'\\n')
 env=['SECRET_KEY=test','NODE_PORT=3000','NFTABLES_LOGGING=false','PATH=/usr/bin']
-if name=='id':print('10001' if 'gowave-node' in args else '0')
+if name=='id':print('10001' if any(a in ('gowave-node','remnanode') for a in args) else '0')
 elif name in ('chown','getent','groupadd','useradd','ujail'):pass
 elif name=='cp':
  subprocess.run(['/bin/cp',*args],check=True)
@@ -55,13 +55,36 @@ elif name=='curl':
  source=root/'assets'/asset
  if not source.exists():sys.exit(22)
  pathlib.Path(args[args.index('-o')+1]).write_bytes(source.read_bytes())
-elif name=='systemctl' or name=='rc-service':
- if args[-1]=='restart' or args[0]=='restart':
-  if os.environ.get('MOCK_RESTART_FAIL')=='1':sys.exit(1)
- if args[0]=='is-enabled':
-  if os.environ.get('MOCK_NATIVE_ACTIVE')=='1':print('enabled')
-  else:sys.exit(3)
- if args[0]=='is-active' or args[-1]=='status':sys.exit(0 if os.environ.get('MOCK_NATIVE_ACTIVE')=='1' else 3)
+elif name in ('systemctl','rc-service','rc-update','legacy-procd'):
+ state_file=root/'service-state'
+ state=json.loads(state_file.read_text()) if state_file.exists() else {}
+ def initial(service):
+  key='MOCK_LEGACY_ACTIVE' if service=='remnanode' else 'MOCK_LEGACY_PATHS_ACTIVE' if service.endswith('.path') and service.startswith('remnanode-') else 'MOCK_LEGACY_UPDATE_ACTIVE' if service=='remnanode-update.service' else 'MOCK_NATIVE_ACTIVE' if service=='gowave-node' else ''
+  active=os.environ.get(key,'0')=='1'
+  return {'active':active,'enabled':active}
+ if name=='systemctl':
+  action=args[0]; services=[a for a in args[1:] if not a.startswith('-')]
+  if action=='show':
+   if args[-1]=='remnanode' and os.environ.get('MOCK_LEGACY_DIR'):print(os.environ['MOCK_LEGACY_DIR'])
+   if args[-1]=='gowave-node' and os.environ.get('MOCK_CURRENT_DIR'):print(os.environ['MOCK_CURRENT_DIR'])
+   sys.exit(0)
+ elif name=='rc-service':services=[args[0]];action=args[1]
+ elif name=='legacy-procd':services=['remnanode'];action=args[0]
+ elif args[0]=='show':
+  for service in ('gowave-node','remnanode'):
+   if state.get(service,initial(service))['enabled']:print(service+' | default')
+  sys.exit(0)
+ else:action='enable' if args[0]=='add' else 'disable';services=[args[1]]
+ for service in services:
+  current=state.setdefault(service,initial(service))
+  if action in ('is-enabled','enabled'):
+   if current['enabled']:print('enabled')
+   else:sys.exit(3)
+  if action in ('is-active','status','running'):sys.exit(0 if current['active'] else 3)
+  if action=='restart' and service=='gowave-node' and os.environ.get('MOCK_RESTART_FAIL')=='1':sys.exit(1)
+  if action in ('enable','disable'):current['enabled']=action=='enable'
+  if action in ('start','stop','restart') or '--now' in args:current['active']=action in ('start','restart','enable')
+ state_file.write_text(json.dumps(state))
 elif name=='ss':
  # The port is held by a stranger (MOCK_PORT_BUSY=1) or by the node once restarted.
  started=any(line.split()[0] in ('systemctl','rc-service','procd') and 'restart' in line.split() for line in open(root/'events'))
@@ -96,7 +119,7 @@ class ScriptTests(unittest.TestCase):
     def run_installer(self, root, runs=1, arch='amd64', manifest='checksums.txt', asn=True, corrupt=False, terminal=False, **environment):
         (root/'assets').mkdir()
         (root/'bin').mkdir()
-        for name in ['id','uname','docker','curl','systemctl','rc-service','rc-update','ss','chown','getent','groupadd','useradd','cp','ujail']:
+        for name in ['id','uname','docker','curl','systemctl','rc-service','rc-update','ss','chown','getent','groupadd','useradd','cp','ujail','legacy-procd']:
             script=root/'bin'/name
             script.write_text(MOCK)
             script.chmod(0o755)
@@ -133,6 +156,7 @@ esac
         env.pop('SECRET_KEY',None)
         env.pop('NODE_PORT',None)
         env.update(environment)
+        env={key:value for key,value in env.items() if value is not None}
         for _ in range(runs):
             if terminal:
                 master, slave = pty.openpty()
@@ -160,6 +184,191 @@ esac
         self.assertFalse((root/'install/gowave-node').exists())
         self.assertFalse((root/'units/gowave-node.service').exists())
         self.assertFalse((root/'units/gowave-node.service.d/90-unprivileged.conf').exists())
+
+    def prepare_previous_native(self, root, manager='systemd'):
+        directory=root/'legacy';directory.mkdir()
+        (directory/'remnanode').write_bytes(b'#!/bin/sh\nexit 0\n')
+        (directory/'remnanode').chmod(0o755)
+        for filename in ('rw-core','rw-core.stock','geoip.dat','geosite.dat','private-key.pem'):
+            (directory/filename).write_bytes(('previous '+filename).encode())
+        (directory/'rw-core').chmod(0o755)
+        (directory/'private-key.pem').chmod(0o600)
+        settings='SECRET_KEY=previous-secret\nNODE_PORT=2222\nREMNANODE_RUNTIME_DIR='+str(root/'custom-run')+'\nNFTABLES_LOGGING=false\n'
+        (directory/'.env').write_text(settings)
+        (directory/'.env').chmod(0o640)
+        if manager=='systemd':
+            units=root/'units';units.mkdir()
+            (units/'remnanode.service').write_text('[Service]\nUser=remnanode\nWorkingDirectory='+str(directory)+'\n')
+            for unit in ('remnanode-restart.path','remnanode-update.path'):
+                (units/unit).write_text('# previous watcher\n')
+        else:
+            units=root/'init.d';units.mkdir()
+            path=units/'remnanode'
+            path.write_text('#!/bin/sh\nexec "$MOCK_ROOT/bin/legacy-procd" "$@"\n')
+            path.chmod(0o755)
+        return directory,settings
+
+    def test_previous_native_migrates_in_place_and_reruns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            previous,_=self.prepare_previous_native(root)
+            files={p.name:p.read_bytes() for p in previous.iterdir() if p.name!='.env'}
+            result,events=self.run_installer(root,runs=2,MOCK_DOCKER='0',MOCK_LEGACY_ACTIVE='1',MOCK_LEGACY_PATHS_ACTIVE='1',MOCK_PORT_BUSY='1',
+                GOWAVE_NODE_INSTALL_DIR=None,GOWAVE_NODE_LEGACY_INSTALL_DIR=str(previous),GOWAVE_NODE_RUNTIME_DIR=None)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            for name,data in files.items():self.assertEqual((previous/name).read_bytes(),data)
+            settings=(previous/'.env').read_text()
+            self.assertIn('SECRET_KEY=previous-secret',settings)
+            self.assertIn('NODE_PORT=2222',settings)
+            self.assertIn('GOWAVE_NODE_RUNTIME_DIR='+str(root/'custom-run'),settings)
+            self.assertIn('GOWAVE_NODE_SERVICE_USER=remnanode',settings)
+            self.assertNotIn('REMNANODE_',settings)
+            policy=(root/'units/gowave-node.service.d/90-unprivileged.conf').read_text()
+            self.assertIn('User=remnanode\n',policy)
+            self.assertIn('Environment=GOWAVE_NODE_RUNTIME_DIR='+str(root/'custom-run'),policy)
+            self.assertIn('PathExists='+str(root/'custom-run/restart-request'),(root/'units/gowave-node-restart.path').read_text())
+            self.assertEqual(events.count('systemctl stop remnanode\n'),1)
+            self.assertLess(events.index('/gowave-node-linux-amd64'),events.index('systemctl stop remnanode'))
+            self.assertLess(events.index('systemctl stop remnanode'),events.index('systemctl restart gowave-node'))
+            self.assertIn('chown -hR remnanode:remnanode '+str(previous),events)
+            for name in ('remnanode','remnanode-go','gowave-node'):
+                self.assertEqual(os.readlink(root/'prefix/bin'/name),str(previous/'gowave-node'))
+            state=json.loads((root/'service-state').read_text())
+            self.assertEqual(state['remnanode'],{'active':False,'enabled':False})
+            self.assertTrue(state['gowave-node']['active'])
+
+    def test_previous_native_failure_restores_service_and_environment(self):
+        for failure in ({'MOCK_READY':'0'},{'MOCK_RESTART_FAIL':'1'}):
+            with self.subTest(failure=failure),tempfile.TemporaryDirectory() as directory:
+                root=pathlib.Path(directory)
+                previous,settings=self.prepare_previous_native(root)
+                before=(previous/'.env').stat()
+                result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_LEGACY_ACTIVE='1',MOCK_LEGACY_PATHS_ACTIVE='1',
+                    GOWAVE_NODE_INSTALL_DIR=str(previous),GOWAVE_NODE_LEGACY_INSTALL_DIR=str(previous),**failure)
+                self.assertNotEqual(result.returncode,0)
+                self.assertEqual((previous/'.env').read_text(),settings)
+                after=(previous/'.env').stat()
+                self.assertEqual((after.st_uid,after.st_gid,after.st_mode),(before.st_uid,before.st_gid,before.st_mode))
+                self.assertFalse((previous/'gowave-node').exists())
+                self.assertFalse((root/'units/gowave-node.service').exists())
+                self.assertIn('systemctl restart remnanode',events)
+                self.assertLess(events.index('systemctl stop gowave-node'),events.index('systemctl restart remnanode'))
+                state=json.loads((root/'service-state').read_text())
+                for unit in ('remnanode','remnanode-restart.path','remnanode-update.path'):
+                    self.assertEqual(state[unit],{'active':True,'enabled':True})
+
+    def test_previous_native_checksum_failure_keeps_old_service_untouched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            previous,settings=self.prepare_previous_native(root)
+            result,events=self.run_installer(root,corrupt=True,MOCK_DOCKER='0',MOCK_LEGACY_ACTIVE='1',
+                GOWAVE_NODE_INSTALL_DIR=str(previous),GOWAVE_NODE_LEGACY_INSTALL_DIR=str(previous))
+            self.assertNotEqual(result.returncode,0)
+            self.assertEqual((previous/'.env').read_text(),settings)
+            self.assertNotIn('systemctl stop remnanode',events)
+            self.assertNotIn('systemctl disable remnanode',events)
+
+    def test_previous_native_openrc_and_procd(self):
+        for manager in ('openrc','procd'):
+            with self.subTest(manager=manager),tempfile.TemporaryDirectory() as directory:
+                root=pathlib.Path(directory)
+                previous,_=self.prepare_previous_native(root,manager)
+                result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_LEGACY_ACTIVE='1',GOWAVE_NODE_INIT=manager,
+                    GOWAVE_NODE_INSTALL_DIR=str(previous),GOWAVE_NODE_LEGACY_INSTALL_DIR=str(previous))
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                command='rc-service remnanode stop' if manager=='openrc' else 'legacy-procd stop'
+                self.assertIn(command,events)
+                self.assertIn('node status --wait-ready',events)
+                self.assertNotIn('systemctl daemon-reload',events)
+
+    def test_previous_installer_options_remain_supported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            previous,_=self.prepare_previous_native(root)
+            result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_LEGACY_ACTIVE='1',GOWAVE_NODE_INIT=None,GOWAVE_NODE_SYSTEMD_DIR=None,
+                GOWAVE_NODE_INSTALL_DIR=None,GOWAVE_NODE_RUNTIME_DIR=None,GOWAVE_NODE_PREFIX=None,
+                REMNANODE_INIT='systemd',REMNANODE_SYSTEMD_DIR=str(root/'units'),REMNANODE_INSTALL_DIR=str(previous),
+                REMNANODE_RUNTIME_DIR=str(root/'custom-run'),REMNANODE_PREFIX=str(root/'prefix'),REMNANODE_VERSION='v2.0.0')
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertIn('/releases/download/v2.0.0/gowave-node-linux-amd64',events)
+            self.assertNotIn('/releases/latest/',events)
+
+    def test_previous_native_rejects_conflicting_live_services(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            previous,settings=self.prepare_previous_native(root)
+            result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_LEGACY_ACTIVE='1',MOCK_NATIVE_ACTIVE='1',
+                GOWAVE_NODE_INSTALL_DIR=str(previous),GOWAVE_NODE_LEGACY_INSTALL_DIR=str(previous))
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('Both native services',result.stdout+result.stderr)
+            self.assertEqual((previous/'.env').read_text(),settings)
+            self.assertNotIn('curl ',events)
+
+    def test_previous_native_discovers_systemd_working_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            previous,_=self.prepare_previous_native(root)
+            result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_LEGACY_ACTIVE='1',MOCK_LEGACY_DIR=str(previous),GOWAVE_NODE_INSTALL_DIR=None)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertIn('systemctl show -p WorkingDirectory --value remnanode',events)
+            self.assertTrue((previous/'gowave-node').exists())
+
+    def test_previous_native_keeps_stopped_service_stopped_on_rollback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            previous,settings=self.prepare_previous_native(root)
+            (root/'service-state').write_text(json.dumps({'remnanode':{'active':False,'enabled':True}}))
+            result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_RUNNING='0',
+                GOWAVE_NODE_INSTALL_DIR=str(previous),GOWAVE_NODE_LEGACY_INSTALL_DIR=str(previous))
+            self.assertNotEqual(result.returncode,0)
+            self.assertEqual((previous/'.env').read_text(),settings)
+            self.assertNotIn('systemctl restart remnanode',events)
+            self.assertEqual(json.loads((root/'service-state').read_text())['remnanode'],{'active':False,'enabled':True})
+
+    def test_previous_native_waits_for_existing_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            previous,settings=self.prepare_previous_native(root)
+            result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_LEGACY_ACTIVE='1',MOCK_LEGACY_UPDATE_ACTIVE='1',
+                GOWAVE_NODE_INSTALL_DIR=str(previous),GOWAVE_NODE_LEGACY_INSTALL_DIR=str(previous))
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('update monitor is running',result.stdout+result.stderr)
+            self.assertEqual((previous/'.env').read_text(),settings)
+            self.assertNotIn('curl ',events)
+
+    def test_previous_native_imports_external_env_and_prefers_new_options(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            previous,settings=self.prepare_previous_native(root)
+            config=root/'previous-config';config.mkdir()
+            (previous/'.env').rename(config/'.env')
+            with (config/'.env').open('a') as stream:
+                stream.write('GOWAVE_NODE_RUNTIME_DIR='+str(root/'preferred-run')+'\n')
+            result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_LEGACY_ACTIVE='1',
+                GOWAVE_NODE_INSTALL_DIR=str(previous),GOWAVE_NODE_LEGACY_INSTALL_DIR=str(previous),GOWAVE_NODE_LEGACY_CONFIG_DIR=str(config),
+                GOWAVE_NODE_RUNTIME_DIR=None,GOWAVE_NODE_VERSION='v2.1.0',REMNANODE_VERSION='v2.0.0')
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            current=(previous/'.env').read_text()
+            self.assertIn('SECRET_KEY=previous-secret',current)
+            self.assertIn('GOWAVE_NODE_RUNTIME_DIR='+str(root/'preferred-run'),current)
+            self.assertIn('/releases/download/v2.1.0/',events)
+            self.assertNotIn('/releases/download/v2.0.0/',events)
+            self.assertTrue((config/'.env').read_text().startswith(settings))
+
+    def test_existing_new_installation_wins_over_retired_old_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            previous,settings=self.prepare_previous_native(root)
+            current=root/'install';current.mkdir()
+            (current/'.env').write_text('SECRET_KEY=current-secret\nNODE_PORT=3333\n')
+            (current/'gowave-node').write_bytes(NODE);(current/'gowave-node').chmod(0o755)
+            (root/'units/gowave-node.service').write_text('[Service]\nWorkingDirectory='+str(current)+'\n')
+            result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_NATIVE_ACTIVE='1',MOCK_CURRENT_DIR=str(current),
+                MOCK_LEGACY_DIR=str(previous),GOWAVE_NODE_INSTALL_DIR=None)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertIn('SECRET_KEY=current-secret',(current/'.env').read_text())
+            self.assertEqual((previous/'.env').read_text(),settings)
+            self.assertNotIn('systemctl stop remnanode',events)
 
     def test_migration_success_and_rerun(self):
         with tempfile.TemporaryDirectory() as directory:

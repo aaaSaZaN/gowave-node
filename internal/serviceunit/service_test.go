@@ -47,7 +47,7 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, directive := range []string{"User=gowave-node", "Group=gowave-node", "ProtectSystem=strict", "ProtectHome=true", "PrivateDevices=true", "PrivateTmp=true", "NoNewPrivileges=true", "MemoryDenyWriteExecute=true", "ReadWritePaths=" + dir, "Restart=always"} {
+	for _, directive := range []string{"User=gowave-node", "Group=gowave-node", "ProtectSystem=strict", "ProtectHome=true", "PrivateDevices=true", "PrivateTmp=true", "NoNewPrivileges=true", "MemoryDenyWriteExecute=true", "ReadWritePaths=" + dir + " /run/gowave-node", "Restart=always"} {
 		if !strings.Contains(string(data), directive+"\n") {
 			t.Errorf("missing %s", directive)
 		}

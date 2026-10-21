@@ -64,7 +64,8 @@ case $machine in
     *) fail "Unsupported CPU architecture: $machine. Published builds: amd64, 386, arm64, armv7, armv6, armv5, riscv64, mips, mipsle, mips64, mips64le." ;;
 esac
 
-init=${GOWAVE_NODE_INIT:-}
+# Previous installer options remain valid during the rename. New options win.
+init=${GOWAVE_NODE_INIT:-${REMNANODE_INIT:-}}
 if [ -z "$init" ]; then
     if [ -d /run/systemd/system ] && have systemctl; then init=systemd
     elif have rc-service && have rc-update; then init=openrc
@@ -72,50 +73,84 @@ if [ -z "$init" ]; then
     else fail 'No supported service manager found (systemd, OpenRC, or OpenWrt procd).'
     fi
 fi
-install_dir=${GOWAVE_NODE_INSTALL_DIR:-/opt/gowave-node}
-prefix=${GOWAVE_NODE_PREFIX:-/usr/local}
+legacy_dir=${GOWAVE_NODE_LEGACY_INSTALL_DIR:-${REMNANODE_INSTALL_DIR:-/opt/remnanode}}
+install_dir=${GOWAVE_NODE_INSTALL_DIR:-}
+prefix=${GOWAVE_NODE_PREFIX:-${REMNANODE_PREFIX:-/usr/local}}
 case $init in
-    systemd) service_file=${GOWAVE_NODE_SYSTEMD_DIR:-/etc/systemd/system}/gowave-node.service; service_mode=0644 ;;
-    openrc|procd) service_file=${GOWAVE_NODE_INITD_DIR:-/etc/init.d}/gowave-node; service_mode=0755 ;;
+    systemd)
+        service_dir=${GOWAVE_NODE_SYSTEMD_DIR:-${REMNANODE_SYSTEMD_DIR:-/etc/systemd/system}}
+        service_file=$service_dir/gowave-node.service
+        legacy_service_file=$service_dir/remnanode.service
+        service_mode=0644
+        # The manager knows custom WorkingDirectory overrides as well.
+        if [ -z "${GOWAVE_NODE_LEGACY_INSTALL_DIR:-${REMNANODE_INSTALL_DIR:-}}" ] && [ -f "$legacy_service_file" ]; then
+            detected_dir=$(systemctl show -p WorkingDirectory --value remnanode 2>/dev/null || true)
+            case $detected_dir in /*) legacy_dir=$detected_dir ;; esac
+        fi
+        if [ -z "$install_dir" ] && [ -f "$service_file" ]; then
+            detected_dir=$(systemctl show -p WorkingDirectory --value gowave-node 2>/dev/null || true)
+            case $detected_dir in /*) install_dir=$detected_dir ;; esac
+        fi
+        ;;
+    openrc|procd)
+        service_dir=${GOWAVE_NODE_INITD_DIR:-${REMNANODE_INITD_DIR:-/etc/init.d}}
+        service_file=$service_dir/gowave-node
+        legacy_service_file=$service_dir/remnanode
+        service_mode=0755
+        ;;
     *) fail "Unsupported GOWAVE_NODE_INIT value: $init" ;;
 esac
-runtime_dir=$(printf '%s' "${GOWAVE_NODE_RUNTIME_DIR:-/run/gowave-node}" | sed 's#//*#/#g; s#/$##')
-case "$runtime_dir" in
-    /*) ;;
-    *) fail 'GOWAVE_NODE_RUNTIME_DIR must be an absolute dedicated directory.' ;;
-esac
-case "$runtime_dir" in
-    /|/run|/var|/var/run|/var/lib|/var/log|/tmp|/opt|/etc|/usr|/usr/local|/dev|/proc|/sys|/home|/root|*/..|*/../*|*/.|*/./*|*[!a-zA-Z0-9_./-]*)
-        fail 'GOWAVE_NODE_RUNTIME_DIR must be a dedicated directory with a simple path.' ;;
-esac
-config_dir=${GOWAVE_NODE_CONFIG_DIR:-/etc/gowave-node}
+if [ -z "$install_dir" ]; then
+    if [ -x /opt/gowave-node/gowave-node ]; then install_dir=/opt/gowave-node
+    elif [ -x "$legacy_dir/remnanode" ] || [ -x "$legacy_dir/gowave-node" ]; then install_dir=$legacy_dir
+    else install_dir=/opt/gowave-node
+    fi
+fi
+runtime_dir=$(printf '%s' "${GOWAVE_NODE_RUNTIME_DIR:-${REMNANODE_RUNTIME_DIR:-/run/gowave-node}}" | sed 's#//*#/#g; s#/$##')
+validate_runtime() {
+    case "$1" in
+        /*) ;;
+        *) fail 'GOWAVE_NODE_RUNTIME_DIR must be an absolute dedicated directory.' ;;
+    esac
+    case "$1" in
+        /|/run|/var|/var/run|/var/lib|/var/log|/tmp|/opt|/etc|/usr|/usr/local|/dev|/proc|/sys|/home|/root|*/..|*/../*|*/.|*/./*|*[!a-zA-Z0-9_./-]*)
+            fail 'GOWAVE_NODE_RUNTIME_DIR must be a dedicated directory with a simple path.' ;;
+    esac
+}
+validate_runtime "$runtime_dir"
+config_dir=${GOWAVE_NODE_CONFIG_DIR:-${REMNANODE_CONFIG_DIR:-/etc/gowave-node}}
 capabilities_file=$config_dir/capabilities.json
 if [ "$init" = procd ]; then
     have ujail || fail 'OpenWrt requires procd-ujail for unprivileged network capabilities. Install it before running the installer.'
     ujail=$(command -v ujail)
 fi
 repo=aaaSaZaN/gowave-node
-version=${GOWAVE_NODE_VERSION:-latest}
+version=${GOWAVE_NODE_VERSION:-${REMNANODE_VERSION:-latest}}
 case $version in *[!a-zA-Z0-9.+-]*|'') fail 'Invalid release version.' ;; esac
 log "Architecture: $arch; service manager: $init; release: $version."
 
-svc() {
-    case $init:$1 in
+service_action() {
+    service_name=$1
+    action=$2
+    action_file=$3
+    case $init:$action in
         systemd:reload) systemctl daemon-reload ;;
-        systemd:enabled) [ "$(systemctl is-enabled gowave-node 2>/dev/null)" = enabled ] ;;
-        systemd:active) systemctl is-active --quiet gowave-node ;;
-        systemd:*) systemctl "$1" gowave-node ;;
+        systemd:enabled) [ "$(systemctl is-enabled "$service_name" 2>/dev/null)" = enabled ] ;;
+        systemd:active) systemctl is-active --quiet "$service_name" ;;
+        systemd:*) systemctl "$action" "$service_name" ;;
         openrc:reload|procd:reload) : ;;
-        openrc:enabled) rc-update show default 2>/dev/null | awk '$1 == "gowave-node" {found = 1} END {exit !found}' ;;
-        openrc:active) rc-service gowave-node status >/dev/null 2>&1 ;;
-        openrc:enable) rc-update add gowave-node default ;;
-        openrc:disable) rc-update del gowave-node default ;;
-        openrc:*) rc-service gowave-node "$1" ;;
-        procd:enabled) [ -x "$service_file" ] && "$service_file" enabled ;;
-        procd:active) [ -x "$service_file" ] && "$service_file" running >/dev/null 2>&1 ;;
-        procd:*) "$service_file" "$1" ;;
+        openrc:enabled) rc-update show default 2>/dev/null | awk -v name="$service_name" '$1 == name {found = 1} END {exit !found}' ;;
+        openrc:active) rc-service "$service_name" status >/dev/null 2>&1 ;;
+        openrc:enable) rc-update add "$service_name" default ;;
+        openrc:disable) rc-update del "$service_name" default ;;
+        openrc:*) rc-service "$service_name" "$action" ;;
+        procd:enabled) [ -x "$action_file" ] && "$action_file" enabled ;;
+        procd:active) [ -x "$action_file" ] && "$action_file" running >/dev/null 2>&1 ;;
+        procd:*) "$action_file" "$action" ;;
     esac
 }
+svc() { service_action gowave-node "$1" "$service_file"; }
+legacy_svc() { service_action remnanode "$1" "$legacy_service_file"; }
 # Copy with a mode through a temporary sibling so the target is replaced atomically.
 put() { cp "$2" "$3.new" && chmod "$1" "$3.new" && mv -f "$3.new" "$3"; }
 # Unlike new release files, rollback files must retain their original ownership.
@@ -155,6 +190,12 @@ container=''
 was_running=false
 restart_policy=no
 native_running=false
+legacy_running=false
+legacy_enabled=false
+legacy_migration=false
+legacy_switched=false
+legacy_paths_enabled=''
+legacy_paths_active=''
 previous_enabled=false
 modified=false
 switched=false
@@ -186,6 +227,14 @@ rollback() {
             fi
         fi
         svc reload
+        if [ "$legacy_switched" = true ]; then
+            if [ "$legacy_enabled" = true ]; then legacy_svc enable; else legacy_svc disable; fi
+            if [ "$legacy_running" = true ]; then legacy_svc restart; fi
+            if [ "$init" = systemd ]; then
+                for unit in $legacy_paths_enabled; do systemctl enable "$unit"; done
+                for unit in $legacy_paths_active; do systemctl start "$unit"; done
+            fi
+        fi
         if [ "$init" = systemd ] && [ "$previous_paths" = true ]; then
             systemctl enable --now gowave-node-restart.path gowave-node-update.path || true
         fi
@@ -221,11 +270,38 @@ if [ "$init" = procd ] && [ -f "$capabilities_file" ]; then
 fi
 if svc enabled; then previous_enabled=true; fi
 if svc active; then native_running=true; fi
+if [ -f "$legacy_service_file" ]; then
+    if legacy_svc active; then legacy_running=true; fi
+    if legacy_svc enabled; then legacy_enabled=true; fi
+    if [ "$legacy_running" = true ] || [ "$legacy_enabled" = true ] || [ ! -f "$service_file" ]; then
+        legacy_migration=true
+        [ "$native_running" != true ] || fail 'Both native services exist and the new service is running. Stop the unused service before migrating.'
+        [ "$install_dir" = "$legacy_dir" ] || fail "Keep the existing installation directory during migration: GOWAVE_NODE_INSTALL_DIR=$legacy_dir"
+        [ -x "$install_dir/remnanode" ] || fail 'The previous node executable is missing; set GOWAVE_NODE_LEGACY_INSTALL_DIR to its directory.'
+        log "Migrating the previous native service in $install_dir."
+        if [ "$init" = systemd ]; then
+            if systemctl is-active --quiet remnanode-update.service; then
+                fail 'An update monitor is running for the previous service. Wait for that update to finish before migrating.'
+            fi
+            for unit in remnanode-restart.path remnanode-update.path; do
+                if [ "$(systemctl is-enabled "$unit" 2>/dev/null)" = enabled ]; then legacy_paths_enabled="$legacy_paths_enabled $unit"; fi
+                if systemctl is-active --quiet "$unit"; then legacy_paths_active="$legacy_paths_active $unit"; fi
+            done
+        fi
+    fi
+fi
 if [ -f "$install_dir/.env" ]; then cp -p "$install_dir/.env" "$work/previous-env"; fi
+legacy_config_dir=${GOWAVE_NODE_LEGACY_CONFIG_DIR:-${REMNANODE_CONFIG_DIR:-/etc/remnanode}}
+if [ "$legacy_migration" = true ] && [ ! -f "$install_dir/.env" ] && [ -f "$legacy_config_dir/.env" ]; then
+    cp -p "$legacy_config_dir/.env" "$work/legacy-env"
+fi
 if [ -x "$install_dir/gowave-node" ]; then cp -p "$install_dir/gowave-node" "$work/previous-node"; fi
 
 if have docker && docker info >/dev/null 2>&1; then
     container=$(docker ps -a --format '{{.Names}}\t{{.Image}}' | awk '$2 ~ /(^|\/)remnawave\/node(:|@|$)|(^|\/)gowave-node(:|@|$)/ {print $1; exit}')
+fi
+if [ "$legacy_migration" = true ] && [ -n "$container" ]; then
+    fail 'Both a previous native service and a Docker node were found. Select the installation to migrate before continuing.'
 fi
 if [ -n "$container" ]; then
     log "Found Docker node container: $container."
@@ -263,9 +339,40 @@ fi
 # A running container holds the live settings; otherwise keep the native ones.
 if [ "$was_running" = true ]; then cp "$work/docker-env.filtered" "$work/env"
 elif [ -f "$work/previous-env" ]; then cp "$work/previous-env" "$work/env"
+elif [ -f "$work/legacy-env" ]; then cp "$work/legacy-env" "$work/env"
 elif [ -n "$container" ]; then cp "$work/docker-env.filtered" "$work/env"
 else : > "$work/env"
 fi
+# Translate saved options without evaluating shell input. Explicit new names
+# take precedence regardless of their ordering in the file.
+awk -F= 'NR == FNR {if ($1 ~ /^GOWAVE_NODE_/) present[$1]=1; next}
+    /^REMNANODE_[A-Za-z0-9_]*=/ {
+        key=$1; sub(/^REMNANODE_/, "GOWAVE_NODE_", key)
+        if (!(key in present)) print key substr($0, length($1)+1)
+        next
+    }
+    {print}' "$work/env" "$work/env" > "$work/env.next"
+mv -f "$work/env.next" "$work/env"
+if [ -z "${GOWAVE_NODE_RUNTIME_DIR:-${REMNANODE_RUNTIME_DIR:-}}" ]; then
+    saved_runtime=$(env_get GOWAVE_NODE_RUNTIME_DIR)
+    if [ -n "$saved_runtime" ]; then runtime_dir=$(unquote "$saved_runtime" GOWAVE_NODE_RUNTIME_DIR); fi
+fi
+validate_runtime "$runtime_dir"
+service_user=$(env_get GOWAVE_NODE_SERVICE_USER)
+service_user=${GOWAVE_NODE_SERVICE_USER:-$service_user}
+if [ -z "$service_user" ]; then
+    service_user=gowave-node
+    # Retain the account that can read existing private keys and custom cores.
+    if [ "$legacy_migration" = true ] && id remnanode >/dev/null 2>&1; then service_user=remnanode; fi
+fi
+service_user=$(unquote "$service_user" GOWAVE_NODE_SERVICE_USER)
+case $service_user in ''|-*|*[!a-zA-Z0-9_-]*|root) fail 'The service account must be an unprivileged account name.' ;; esac
+if [ "$legacy_migration" = true ]; then
+    env_set GOWAVE_NODE_SERVICE_USER "$service_user"
+    env_set GOWAVE_NODE_RUNTIME_DIR "$runtime_dir"
+fi
+# The same runtime must be used by the installed policy and the CLI checks.
+export GOWAVE_NODE_RUNTIME_DIR="$runtime_dir" GOWAVE_NODE_SERVICE_USER="$service_user"
 secret=$(env_get SECRET_KEY)
 [ -n "$secret" ] || secret=${SECRET_KEY:-}
 [ -n "$secret" ] || secret=$(ask 'Paste SECRET_KEY from the panel node settings: ')
@@ -279,7 +386,7 @@ case $port in ''|*[!0-9]*) fail "Invalid NODE_PORT: $port" ;; esac
 if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then fail "Invalid NODE_PORT: $port"; fi
 # Our own node or container may hold the port; anything else would make the
 # new node crash-loop while the panel reaches a stranger on that port.
-if [ "$native_running" != true ] && [ "$was_running" != true ] && port_busy "$port"; then
+if [ "$native_running" != true ] && [ "$legacy_running" != true ] && [ "$was_running" != true ] && port_busy "$port"; then
     fail "NODE_PORT $port is already in use by another program (see: ss -ltnp 'sport = :$port'). Pick a free port and use the same one for the node in the panel."
 fi
 env_set SECRET_KEY "$secret"
@@ -314,8 +421,8 @@ After=network-online.target
 Wants=network-online.target
 [Service]
 Type=simple
-User=gowave-node
-Group=gowave-node
+User=$service_user
+Group=$service_user
 WorkingDirectory=$install_dir
 ExecStart=$install_dir/gowave-node
 RuntimeDirectory=gowave-node
@@ -333,7 +440,7 @@ elif [ "$init" = openrc ]; then
 description="gowave-node"
 command="$install_dir/gowave-node"
 directory="$install_dir"
-command_user="gowave-node:gowave-node"
+command_user="$service_user:$service_user"
 capabilities="^cap_net_bind_service,^cap_net_admin,^cap_net_raw"
 no_new_privs=true
 export GOWAVE_NODE_RUNTIME_DIR="$runtime_dir"
@@ -346,7 +453,7 @@ umask=077
 rc_ulimit="-n 1048576"
 
 start_pre() {
-    checkpath -d -m 0700 -o gowave-node:gowave-node "$runtime_dir"
+    checkpath -d -m 0700 -o $service_user:$service_user "$runtime_dir"
 }
 
 depend() {
@@ -364,11 +471,11 @@ USE_PROCD=1
 start_service() {
     [ ! -L "$runtime_dir" ] || return 1
     mkdir -p "$runtime_dir" || return 1
-    chown gowave-node:gowave-node "$runtime_dir" || return 1
+    chown $service_user:$service_user "$runtime_dir" || return 1
     chmod 0700 "$runtime_dir" || return 1
 	procd_open_instance
     # ujail drops UID/GID and sets ambient capabilities before executing the node.
-    procd_set_param command "$ujail" -U gowave-node -G gowave-node -C "$capabilities_file" -c -- "$install_dir/gowave-node"
+    procd_set_param command "$ujail" -U $service_user -G $service_user -C "$capabilities_file" -c -- "$install_dir/gowave-node"
     procd_set_param env GOWAVE_NODE_RUNTIME_DIR="$runtime_dir" XRAY_CORE_PATH="$install_dir/rw-core" XRAY_LOCATION_ASSET="$install_dir"
 	procd_set_param respawn 3600 3 0
 	procd_set_param limits nofile="1048576 1048576"
@@ -388,7 +495,7 @@ if [ ! -x "$install_dir/rw-core" ] && [ ! -x "$prefix/bin/rw-core" ]; then
 fi
 put "$service_mode" "$work/service" "$service_file"
 # Share persistent ownership and core/asset setup across all service managers.
-"$install_dir/gowave-node" service install "$install_dir" "$(dirname "$service_file")" "$init"
+GOWAVE_NODE_DEFER_PATHS=1 "$install_dir/gowave-node" service install "$install_dir" "$(dirname "$service_file")" "$init"
 if [ "$init" = procd ]; then
     mkdir -p "$config_dir"
     config_path=$(cd "$config_dir" && pwd -P)
@@ -413,12 +520,25 @@ svc reload
 svc enable
 started=$(date +%s)
 switched=true
+if [ "$legacy_migration" = true ]; then
+    # Do not retire the old service or its update watchers before provisioning
+    # and checksum verification finish. Rollback restores each prior state.
+    legacy_switched=true
+    if [ "$init" = systemd ]; then
+        for unit in remnanode-restart.path remnanode-update.path; do
+            if [ -f "$service_dir/$unit" ]; then systemctl disable --now "$unit"; fi
+        done
+    fi
+    legacy_svc disable
+    legacy_svc stop
+fi
 if [ "$was_running" = true ]; then
     docker update --restart=no "$container"
     docker stop -t 10 "$container"
 fi
 svc restart
-if [ "$was_running" = true ] || [ "$native_running" = true ]; then
+if [ "$init" = systemd ]; then systemctl enable --now gowave-node-restart.path gowave-node-update.path; fi
+if [ "$was_running" = true ] || [ "$native_running" = true ] || [ "$legacy_running" = true ]; then
     log 'Waiting up to 2 minutes for the node to become ready...'
     "$install_dir/gowave-node" status --wait-ready || fail 'The node did not become ready.'
     log "Node is ready; measured switch-to-Xray-readiness time: $(( $(date +%s) - started )) seconds."
@@ -434,4 +554,10 @@ for name in gowave-node xlogs; do
     destination=$prefix/bin/$name
     if [ ! -e "$destination" ] || [ -L "$destination" ]; then ln -sfn "$install_dir/gowave-node" "$destination"; fi
 done
+if [ "$legacy_migration" = true ] || [ -x "$install_dir/remnanode" ]; then
+    for name in remnanode remnanode-go; do
+        destination=$prefix/bin/$name
+        if [ ! -e "$destination" ] || [ -L "$destination" ]; then ln -sfn "$install_dir/gowave-node" "$destination"; fi
+    done
+fi
 if [ -n "$container" ]; then log "The previous container $container is retained for manual recovery."; fi

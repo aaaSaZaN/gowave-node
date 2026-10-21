@@ -28,9 +28,21 @@ for Xray readiness and restore the previous service on failure. The script is
 POSIX sh and supports systemd, OpenRC, and OpenWrt
 procd on amd64, 386, arm64, ARMv7/v6/v5, RISC-V, and MIPS.
 
-When replacing an installation with a different service name, stop and disable
-that service first and copy its `.env` to `/opt/gowave-node/.env`. The new service
-and account are `gowave-node`; project environment overrides use `GOWAVE_NODE_`.
+The installer automatically migrates previous native installations to the
+`gowave-node` service. It retains their installation directory and unprivileged
+account so certificate paths, custom cores, and permissions keep working. It
+preserves the secret and port, translates saved environment options, and creates
+aliases for the previous CLI names. The previous service and its update watchers
+are disabled only after the release is verified and provisioned; a failed switch
+restores their prior state and the original `.env`.
+
+Previous `REMNANODE_` installer options remain accepted; explicit `GOWAVE_NODE_`
+options take precedence. For a custom previous installation directory, set
+`GOWAVE_NODE_LEGACY_INSTALL_DIR` (systemd also discovers its working directory).
+Do not change the installation directory during this migration. Fresh installs
+use `/opt/gowave-node` and the `gowave-node` account. Custom native unit overrides
+and s6 supervisor definitions should be reviewed separately when changing names.
+
 Publish `gowave-node-linux-<architecture>` assets in `aaaSaZaN/gowave-node`
 before using this installer or the updater.
 
