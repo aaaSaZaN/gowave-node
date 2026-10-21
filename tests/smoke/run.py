@@ -16,7 +16,7 @@ import time
 import urllib.request
 
 mode = sys.argv[1] if len(sys.argv) > 1 else 'native'
-candidate = pathlib.Path(os.environ.get('REMNANODE_SMOKE_CANDIDATE', '/candidate'))
+candidate = pathlib.Path(os.environ.get('GOWAVE_NODE_SMOKE_CANDIDATE', '/candidate'))
 root = pathlib.Path(tempfile.mkdtemp(prefix='node-smoke-'))
 processes = []
 def command(*args):
@@ -38,7 +38,7 @@ try:
     signing = subprocess.run(['openssl','dgst','-sha256','-sign',str(root/'node.key')],input=token_body,capture_output=True,check=True).stdout
     token = (token_body+b'.'+encode(signing)).decode()
     port = free_port()
-    environment = dict(os.environ, SECRET_KEY=base64.b64encode(json.dumps(payload).encode()).decode(), NODE_PORT=str(port), REMNANODE_RUNTIME_DIR=str(root/'run'), XTLS_API_SOCKET_PATH=str(root/'api.sock'), INTERNAL_SOCKET_PATH='smoke-'+root.name, INTERNAL_REST_TOKEN=os.urandom(32).hex(), XRAY_S6_SERVICE_DIR=str(root/'no-s6'), XRAY_CORE_PATH=str(candidate/'rw-core'))
+    environment = dict(os.environ, SECRET_KEY=base64.b64encode(json.dumps(payload).encode()).decode(), NODE_PORT=str(port), GOWAVE_NODE_RUNTIME_DIR=str(root/'run'), XTLS_API_SOCKET_PATH=str(root/'api.sock'), INTERNAL_SOCKET_PATH='smoke-'+root.name, INTERNAL_REST_TOKEN=os.urandom(32).hex(), XRAY_S6_SERVICE_DIR=str(root/'no-s6'), XRAY_CORE_PATH=str(candidate/'rw-core'))
     if mode == 's6':
         service = root/'services'/'xray'
         service.mkdir(parents=True)
@@ -52,7 +52,7 @@ try:
             if time.monotonic()>deadline: raise TimeoutError('s6 control missing')
             time.sleep(.05)
         environment['XRAY_S6_SERVICE_DIR'] = str(service)
-    processes.append(subprocess.Popen([str(candidate/'remnanode')],env=environment,cwd=candidate))
+    processes.append(subprocess.Popen([str(candidate/'gowave-node')],env=environment,cwd=candidate))
     context = ssl.create_default_context(cafile=str(root/'ca.crt'))
     context.check_hostname = False
     context.load_cert_chain(str(root/'node.crt'),str(root/'node.key'))

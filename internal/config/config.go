@@ -41,7 +41,7 @@ func LoadEnv() {
 	if exe, err := os.Executable(); err == nil {
 		candidates = append(candidates, filepath.Join(filepath.Dir(exe), ".env"))
 	}
-	candidates = append(candidates, "/opt/remnanode/.env", "/etc/remnanode/.env")
+	candidates = append(candidates, "/opt/gowave-node/.env", "/etc/gowave-node/.env")
 
 	seen := make(map[string]bool)
 	for _, p := range candidates {

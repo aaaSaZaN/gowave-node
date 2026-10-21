@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/remnawave/node-go/internal/config"
-	statscommand "github.com/remnawave/node-go/internal/xrayapi"
-	hysteria "github.com/remnawave/node-go/internal/xrayapi/hysteria"
+	"github.com/aaaSaZaN/gowave-node/internal/config"
+	statscommand "github.com/aaaSaZaN/gowave-node/internal/xrayapi"
+	hysteria "github.com/aaaSaZaN/gowave-node/internal/xrayapi/hysteria"
 	proxymancommand "github.com/xtls/xray-core/app/proxyman/command"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/serial"

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/remnawave/node-go/internal/config"
+	"github.com/aaaSaZaN/gowave-node/internal/config"
 )
 
 // setupServerTLS creates a *tls.Config for mtls

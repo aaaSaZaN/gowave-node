@@ -11,7 +11,7 @@ const stockS6Body = `exec 2>&1
 exec /usr/local/bin/rw-core \
     -config @"${INTERNAL_SOCKET_PATH}":/internal/get-config?token="${INTERNAL_REST_TOKEN}" \
     -format json`
-const managedS6Marker = "# managed by remnanode-go: private file configuration\n"
+const managedS6Marker = "# managed by gowave-node: private file configuration\n"
 
 func recognizedStockRun(data []byte) bool {
 	text := strings.TrimSpace(string(data))
@@ -48,7 +48,7 @@ func (p *ProcessManager) prepareS6Run() error {
 	if err != nil {
 		return err
 	}
-	backup := path + ".remnanode-original"
+	backup := path + ".gowave-node-original"
 	managed := strings.Contains(string(data), managedS6Marker)
 	if !recognizedStockRun(data) && !managed {
 		return nil
@@ -88,7 +88,7 @@ func (p *ProcessManager) restoreS6Run() error {
 	if !strings.Contains(string(data), managedS6Marker) {
 		return nil
 	}
-	original, err := os.ReadFile(path + ".remnanode-original")
+	original, err := os.ReadFile(path + ".gowave-node-original")
 	if err != nil {
 		return err
 	}

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aaaSaZaN/gowave-node/internal/config"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/remnawave/node-go/internal/config"
 )
 
 func TestJWTMiddleware(t *testing.T) {
@@ -62,7 +62,7 @@ func TestJWTMiddleware(t *testing.T) {
 
 	// valid jwt token
 	claims := jwt.MapClaims{
-		"sub": "remnawave-panel",
+		"sub": "gowave-panel",
 		"exp": time.Now().Add(1 * time.Hour).Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)

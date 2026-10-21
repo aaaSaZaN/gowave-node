@@ -33,8 +33,8 @@ jobs:
         with:
           go-version-file: go.mod
       - run: python3 scripts/fetch-test-core.py '${{ matrix.core }}' .smoke
-      - run: REMNANODE_TEST_CORE="$PWD/.smoke/rw-core" go test -race ./internal/xray -run RealCore -v
-      - run: CGO_ENABLED=0 go build -o .smoke/remnanode ./cmd/remnanode
-      - run: docker build -f tests/smoke/Dockerfile -t remnanode-smoke .
-      - run: docker run --rm --cap-drop=ALL remnanode-smoke native
-      - run: docker run --rm --cap-drop=ALL remnanode-smoke s6
+      - run: GOWAVE_NODE_TEST_CORE="$PWD/.smoke/rw-core" go test -race ./internal/xray -run RealCore -v
+      - run: CGO_ENABLED=0 go build -o .smoke/gowave-node ./cmd/gowave-node
+      - run: docker build -f tests/smoke/Dockerfile -t gowave-node-smoke .
+      - run: docker run --rm --cap-drop=ALL gowave-node-smoke native
+      - run: docker run --rm --cap-drop=ALL gowave-node-smoke s6

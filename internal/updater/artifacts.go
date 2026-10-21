@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const NodeRepository = "aaaSaZaN/remnanode-go"
+const NodeRepository = "aaaSaZaN/gowave-node"
 const CoreRepository = "XTLS/Xray-core"
 const MaxArtifactSize int64 = 128 * 1024 * 1024
 
@@ -41,7 +41,7 @@ func fetchBytes(ctx context.Context, raw string, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Remnanode-Go")
+	req.Header.Set("User-Agent", "gowave-node")
 	res, err := HTTPClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -132,8 +132,8 @@ func ValidateNodeBinary(path string) error {
 	if err != nil {
 		return err
 	}
-	if !strings.HasPrefix(string(out), "Remnawave Node (Go) v") {
-		return errors.New("download is not a Remnanode Go executable")
+	if !strings.HasPrefix(string(out), "gowave-node v") {
+		return errors.New("download is not a gowave-node Go executable")
 	}
 	return nil
 }

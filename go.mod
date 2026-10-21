@@ -1,4 +1,4 @@
-module github.com/remnawave/node-go
+module github.com/aaaSaZaN/gowave-node
 
 go 1.27.1
 

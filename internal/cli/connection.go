@@ -3,8 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
-	"github.com/remnawave/node-go/internal/config"
-	"github.com/remnawave/node-go/internal/updater"
+	"github.com/aaaSaZaN/gowave-node/internal/config"
+	"github.com/aaaSaZaN/gowave-node/internal/updater"
 	"net"
 	"net/http"
 	"net/url"

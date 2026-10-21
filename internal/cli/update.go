@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/remnawave/node-go/internal/config"
-	"github.com/remnawave/node-go/internal/updater"
-	"github.com/remnawave/node-go/internal/xray"
+	"github.com/aaaSaZaN/gowave-node/internal/config"
+	"github.com/aaaSaZaN/gowave-node/internal/updater"
+	"github.com/aaaSaZaN/gowave-node/internal/xray"
 )
 
 func RunUpdateCLI(currentVersion string, args []string) {
@@ -121,7 +121,7 @@ func RunUpdateCLI(currentVersion string, args []string) {
 	fmt.Printf("\nTarget: %s%s%s (Prerelease: %v)\n", colorCyan, chosenRelease.TagName, colorReset, chosenRelease.Prerelease)
 
 	if !autoConfirm {
-		fmt.Printf("%s[WARNING]%s This operation will update the binary and restart Remnanode.\n", colorYellow, colorReset)
+		fmt.Printf("%s[WARNING]%s This operation will update the binary and restart gowave-node.\n", colorYellow, colorReset)
 		fmt.Print("Proceed with update? [y/N]: ")
 		reader := bufio.NewReader(os.Stdin)
 		ans, _ := reader.ReadString('\n')
@@ -132,14 +132,14 @@ func RunUpdateCLI(currentVersion string, args []string) {
 		}
 	}
 
-	asset, err := updater.MatchAsset(chosenRelease.Assets, updater.GetCurrentOS(), updater.AssetArch(), "remnanode")
+	asset, err := updater.MatchAsset(chosenRelease.Assets, updater.GetCurrentOS(), updater.AssetArch(), "gowave-node")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s[ERROR]%s %v\n", colorRed, colorReset, err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("Downloading %s (%.1f MB)...\n", asset.Name, float64(asset.Size)/(1024*1024))
-	tmpPath, err := updater.DownloadReleaseBinary(*chosenRelease, *asset, "remnanode")
+	tmpPath, err := updater.DownloadReleaseBinary(*chosenRelease, *asset, "gowave-node")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s[ERROR]%s Download failed: %v\n", colorRed, colorReset, err)
 		os.Exit(1)
@@ -147,7 +147,7 @@ func RunUpdateCLI(currentVersion string, args []string) {
 
 	selfPath, err := os.Executable()
 	if err != nil {
-		selfPath = "/usr/local/bin/remnanode"
+		selfPath = "/usr/local/bin/gowave-node"
 	}
 	selfPath, _ = filepath.EvalSymlinks(selfPath)
 
@@ -172,7 +172,7 @@ func RunUpdateCLI(currentVersion string, args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("%s[SUCCESS]%s Remnanode updated to %s!\n", colorGreen, colorReset, chosenRelease.TagName)
+	fmt.Printf("%s[SUCCESS]%s gowave-node updated to %s!\n", colorGreen, colorReset, chosenRelease.TagName)
 	fmt.Println("Restarting service...")
 	d, _ := config.ReadDiscovery()
 	if err := CompleteUpdate(selfPath, Ready(true), d.PID); err != nil {
@@ -183,7 +183,7 @@ func RunUpdateCLI(currentVersion string, args []string) {
 
 func RunCoreCLI(args []string) {
 	if len(args) == 0 {
-		fmt.Println("Usage: remnanode core [command]")
+		fmt.Println("Usage: gowave-node core [command]")
 		fmt.Println("\nCommands:")
 		fmt.Println("  install [--repo XTLS/Xray-core] [--version v...] [-y]   Install or update Xray core")
 		fmt.Println("  reset                                                  Reset to default core")
@@ -347,7 +347,7 @@ func RunCoreCLI(args []string) {
 	}
 
 	fmt.Printf("%s[SUCCESS]%s Core updated to %s!\n", colorGreen, colorReset, chosenRelease.TagName)
-	fmt.Println("Restarting remnanode to reload core...")
+	fmt.Println("Restarting gowave-node to reload core...")
 	d, _ := config.ReadDiscovery()
 	if d.PID == 0 {
 		updater.CommitUpdate(targetCorePath)

@@ -7,7 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"github.com/remnawave/node-go/internal/config"
+	"github.com/aaaSaZaN/gowave-node/internal/config"
 	"io"
 	"log"
 	"math/big"

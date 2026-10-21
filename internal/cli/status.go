@@ -2,8 +2,8 @@ package cli
 
 import (
 	"fmt"
-	"github.com/remnawave/node-go/internal/config"
-	"github.com/remnawave/node-go/internal/updater"
+	"github.com/aaaSaZaN/gowave-node/internal/config"
+	"github.com/aaaSaZaN/gowave-node/internal/updater"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,7 +12,7 @@ import (
 )
 
 func RunStatusCLI(version string) {
-	fmt.Printf("%s[STATUS]%s Checking Remnanode service status...\n\n", colorCyan, colorReset)
+	fmt.Printf("%s[STATUS]%s Checking gowave-node service status...\n\n", colorCyan, colorReset)
 
 	activeSocket := ""
 	if Ready(false) {
@@ -27,10 +27,10 @@ func RunStatusCLI(version string) {
 
 	// 2. Systemd service status
 	if _, err := exec.LookPath("systemctl"); err == nil {
-		out, err := exec.Command("systemctl", "is-active", "remnanode").Output()
+		out, err := exec.Command("systemctl", "is-active", "gowave-node").Output()
 		status := strings.TrimSpace(string(out))
 		if err == nil && status == "active" {
-			fmt.Printf("  %s●%s Systemd Service:   %s%s%s (remnanode.service)\n", colorGreen, colorReset, colorGreen, status, colorReset)
+			fmt.Printf("  %s●%s Systemd Service:   %s%s%s (gowave-node.service)\n", colorGreen, colorReset, colorGreen, status, colorReset)
 		} else {
 			if status == "" {
 				status = "unknown / not installed"
@@ -64,7 +64,7 @@ func RunStatusCLI(version string) {
 		}
 		fmt.Printf("  %s●%s Xray Core:         %s%s%s (%s)\n", colorGreen, colorReset, colorCyan, coreVer, colorReset, foundCore)
 	} else {
-		fmt.Printf("  %s○%s Xray Core:         %sNOT FOUND%s (run 'remnanode core install')\n", colorRed, colorReset, colorRed, colorReset)
+		fmt.Printf("  %s○%s Xray Core:         %sNOT FOUND%s (run 'gowave-node core install')\n", colorRed, colorReset, colorRed, colorReset)
 	}
 
 	// 4. Version info
@@ -72,7 +72,7 @@ func RunStatusCLI(version string) {
 }
 
 func RunRestartCLI() {
-	fmt.Printf("%s[RESTART]%s Restarting Remnanode service...\n", colorCyan, colorReset)
+	fmt.Printf("%s[RESTART]%s Restarting gowave-node service...\n", colorCyan, colorReset)
 
 	if os.Geteuid() != 0 && updater.IsManagedService() {
 		old, _ := config.ReadDiscovery()
@@ -84,39 +84,39 @@ func RunRestartCLI() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		fmt.Println("Remnanode restarted successfully.")
+		fmt.Println("gowave-node restarted successfully.")
 		return
 	}
 	if _, err := exec.LookPath("systemctl"); err == nil {
-		cmd := exec.Command("systemctl", "restart", "remnanode")
+		cmd := exec.Command("systemctl", "restart", "gowave-node")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err == nil {
-			fmt.Printf("%s[SUCCESS]%s Remnanode restarted successfully via systemd.\n", colorGreen, colorReset)
+			fmt.Printf("%s[SUCCESS]%s gowave-node restarted successfully via systemd.\n", colorGreen, colorReset)
 			return
 		}
 	}
 
 	if _, err := exec.LookPath("service"); err == nil {
-		cmd := exec.Command("service", "remnanode", "restart")
+		cmd := exec.Command("service", "gowave-node", "restart")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err == nil {
-			fmt.Printf("%s[SUCCESS]%s Remnanode restarted successfully via service.\n", colorGreen, colorReset)
+			fmt.Printf("%s[SUCCESS]%s gowave-node restarted successfully via service.\n", colorGreen, colorReset)
 			return
 		}
 	}
 
-	if _, err := os.Stat("/etc/init.d/remnanode"); err == nil {
-		cmd := exec.Command("/etc/init.d/remnanode", "restart")
+	if _, err := os.Stat("/etc/init.d/gowave-node"); err == nil {
+		cmd := exec.Command("/etc/init.d/gowave-node", "restart")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err == nil {
-			fmt.Printf("%s[SUCCESS]%s Remnanode restarted successfully via init.d.\n", colorGreen, colorReset)
+			fmt.Printf("%s[SUCCESS]%s gowave-node restarted successfully via init.d.\n", colorGreen, colorReset)
 			return
 		}
 	}
 
-	fmt.Printf("%s[ERROR]%s Could not automatically restart service. Run 'systemctl restart remnanode' manually.\n", colorRed, colorReset)
+	fmt.Printf("%s[ERROR]%s Could not automatically restart service. Run 'systemctl restart gowave-node' manually.\n", colorRed, colorReset)
 	os.Exit(1)
 }

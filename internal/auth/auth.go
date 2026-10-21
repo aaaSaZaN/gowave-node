@@ -12,8 +12,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/aaaSaZaN/gowave-node/internal/config"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/remnawave/node-go/internal/config"
 )
 
 type AuthManager struct {

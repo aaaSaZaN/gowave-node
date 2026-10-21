@@ -8,8 +8,8 @@ import (
 
 func TestManagedUpdateRequestUsesPrivateRuntimeAndSeparateMonitor(t *testing.T) {
 	dir, runtime := t.TempDir(), t.TempDir()
-	t.Setenv("REMNANODE_RUNTIME_DIR", runtime)
-	target := filepath.Join(dir, "remnanode")
+	t.Setenv("GOWAVE_NODE_RUNTIME_DIR", runtime)
+	target := filepath.Join(dir, "gowave-node")
 	if err := writeManagedUpdate(dir, target, false, 123); err != nil {
 		t.Fatal(err)
 	}
@@ -41,8 +41,8 @@ func TestManagedUpdateRequestUsesPrivateRuntimeAndSeparateMonitor(t *testing.T) 
 
 func TestInvalidManagedUpdateRequestIsRejected(t *testing.T) {
 	runtime := t.TempDir()
-	t.Setenv("REMNANODE_RUNTIME_DIR", runtime)
-	for _, body := range []string{`{`, `{"target":"relative/path","pid":123}`, `{"target":"/opt/remnanode/remnanode","pid":0}`} {
+	t.Setenv("GOWAVE_NODE_RUNTIME_DIR", runtime)
+	for _, body := range []string{`{`, `{"target":"relative/path","pid":123}`, `{"target":"/opt/gowave-node/gowave-node","pid":0}`} {
 		if err := os.WriteFile(filepath.Join(runtime, "update-request.json"), []byte(body), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -57,8 +57,8 @@ func TestManagedRestartDoesNotInvokeServiceManager(t *testing.T) {
 		t.Skip("unprivileged request path")
 	}
 	runtime := t.TempDir()
-	t.Setenv("REMNANODE_RUNTIME_DIR", runtime)
-	t.Setenv("REMNANODE_MANAGED_SERVICE", "1")
+	t.Setenv("GOWAVE_NODE_RUNTIME_DIR", runtime)
+	t.Setenv("GOWAVE_NODE_MANAGED_SERVICE", "1")
 	t.Setenv("PATH", t.TempDir())
 	if err := RestartNodeProcess(); err != nil {
 		t.Fatal(err)

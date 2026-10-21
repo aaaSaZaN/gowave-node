@@ -28,11 +28,11 @@ jobs:
             arm=7
             asset_arch=$arch
             case $target in arm:*) arm=${target#arm:}; asset_arch=armv$arm ;; esac
-            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" GOARM="$arm" GOMIPS=softfloat go build -trimpath -ldflags="-s -w -X main.AppVersion=$BUILD_VERSION" -o "dist/remnanode-linux-$asset_arch" ./cmd/remnanode
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" GOARM="$arm" GOMIPS=softfloat go build -trimpath -ldflags="-s -w -X main.AppVersion=$BUILD_VERSION" -o "dist/gowave-node-linux-$asset_arch" ./cmd/gowave-node
           done
       - run: sudo apt-get update && sudo apt-get install -y zstd
       - run: bash scripts/build-asn.sh dist/asn-prefixes.zip
-      - run: cp install.sh dist/ && cd dist && sha256sum remnanode-* asn-prefixes.zip install.sh > checksums.txt
+      - run: cp install.sh dist/ && cd dist && sha256sum gowave-node-* asn-prefixes.zip install.sh > checksums.txt
       - uses: actions/upload-artifact@v4
         with:
           name: release-candidate

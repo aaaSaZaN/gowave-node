@@ -9,9 +9,9 @@ import (
 )
 
 func TestRealCoreLifecycle(t *testing.T) {
-	core := os.Getenv("REMNANODE_TEST_CORE")
+	core := os.Getenv("GOWAVE_NODE_TEST_CORE")
 	if core == "" {
-		t.Skip("set REMNANODE_TEST_CORE to run real-core integration")
+		t.Skip("set GOWAVE_NODE_TEST_CORE to run real-core integration")
 	}
 	dir := t.TempDir()
 	socket := filepath.Join(dir, "api.sock")

@@ -13,7 +13,7 @@ import io
 version, destination = sys.argv[1:]
 arch = {'x86_64': '64', 'aarch64': 'arm64-v8a'}[platform.machine()]
 endpoint = 'latest' if version == 'latest' else 'tags/' + version
-request = urllib.request.Request('https://api.github.com/repos/XTLS/Xray-core/releases/' + endpoint, headers={'User-Agent': 'Remnanode-tests'})
+request = urllib.request.Request('https://api.github.com/repos/XTLS/Xray-core/releases/' + endpoint, headers={'User-Agent': 'gowave-node-tests'})
 metadata = json.load(urllib.request.urlopen(request, timeout=30))
 asset = next(a for a in metadata['assets'] if a['name'] == f'Xray-linux-{arch}.zip')
 response = urllib.request.urlopen(asset['browser_download_url'], timeout=120)

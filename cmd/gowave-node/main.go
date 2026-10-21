@@ -15,22 +15,22 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aaaSaZaN/gowave-node/internal/apiutil"
+	"github.com/aaaSaZaN/gowave-node/internal/auth"
+	"github.com/aaaSaZaN/gowave-node/internal/cli"
+	"github.com/aaaSaZaN/gowave-node/internal/config"
+	"github.com/aaaSaZaN/gowave-node/internal/handler"
+	"github.com/aaaSaZaN/gowave-node/internal/internalapi"
+	"github.com/aaaSaZaN/gowave-node/internal/lock"
+	"github.com/aaaSaZaN/gowave-node/internal/logger"
+	"github.com/aaaSaZaN/gowave-node/internal/plugin"
+	"github.com/aaaSaZaN/gowave-node/internal/serviceunit"
+	"github.com/aaaSaZaN/gowave-node/internal/stats"
+	"github.com/aaaSaZaN/gowave-node/internal/tlsutil"
+	"github.com/aaaSaZaN/gowave-node/internal/updater"
+	"github.com/aaaSaZaN/gowave-node/internal/xray"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/remnawave/node-go/internal/apiutil"
-	"github.com/remnawave/node-go/internal/auth"
-	"github.com/remnawave/node-go/internal/cli"
-	"github.com/remnawave/node-go/internal/config"
-	"github.com/remnawave/node-go/internal/handler"
-	"github.com/remnawave/node-go/internal/internalapi"
-	"github.com/remnawave/node-go/internal/lock"
-	"github.com/remnawave/node-go/internal/logger"
-	"github.com/remnawave/node-go/internal/plugin"
-	"github.com/remnawave/node-go/internal/serviceunit"
-	"github.com/remnawave/node-go/internal/stats"
-	"github.com/remnawave/node-go/internal/tlsutil"
-	"github.com/remnawave/node-go/internal/updater"
-	"github.com/remnawave/node-go/internal/xray"
 )
 
 var AppVersion = "1.0.5"
@@ -52,7 +52,7 @@ func main() {
 			return
 		case "service":
 			if len(os.Args) < 3 || len(os.Args) > 6 || os.Args[2] != "install" {
-				log.Fatal("Usage: remnanode service install [directory] [unit-directory] [systemd|openrc|procd]")
+				log.Fatal("Usage: gowave-node service install [directory] [unit-directory] [systemd|openrc|procd]")
 			}
 			exe, err := os.Executable()
 			if err != nil {
@@ -120,10 +120,10 @@ func main() {
 			cli.RunCoreCLI(os.Args[2:])
 			return
 		case "version", "-v", "--version":
-			fmt.Printf("Remnawave Node (Go) v%s\n", AppVersion)
+			fmt.Printf("gowave-node v%s\n", AppVersion)
 			return
 		case "help", "-h", "--help":
-			fmt.Printf("Usage: %s [command]\n\nCommands:\n  status                   Show node status and Xray core info\n  restart                  Restart Remnanode service\n  logs  [-n lines] [-f]    View Node service logs\n  xlogs [-n lines] [-f]    View Xray core logs\n  update [flags]           Update Remnanode binary\n  core install [flags]     Install or update Xray core\n  core update              Update Xray core to latest\n  version                  Show version\n", os.Args[0])
+			fmt.Printf("Usage: %s [command]\n\nCommands:\n  status                   Show node status and Xray core info\n  restart                  Restart gowave-node service\n  logs  [-n lines] [-f]    View Node service logs\n  xlogs [-n lines] [-f]    View Xray core logs\n  update [flags]           Update gowave-node binary\n  core install [flags]     Install or update Xray core\n  core update              Update Xray core to latest\n  version                  Show version\n", os.Args[0])
 			return
 		}
 	}
@@ -142,7 +142,7 @@ func main() {
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.SetOutput(io.MultiWriter(os.Stderr, nodeRingBuffer))
-	log.Printf("[INIT] Starting Remnawave Node (Go) v%s...", AppVersion)
+	log.Printf("[INIT] Starting gowave-node v%s...", AppVersion)
 
 	cfg, err := config.LoadConfig()
 	if err != nil {
@@ -220,8 +220,8 @@ func main() {
 
 	sysInfo := stats.GetSystemInfo()
 	ver, _ := processMgr.GetCoreVersion()
-	box := config.RenderBox(fmt.Sprintf("Remnawave Node v%s (Go)", AppVersion), []string{
-		"Docs → https://docs.rw\nCommunity → https://t.me/remnawave",
+	box := config.RenderBox(fmt.Sprintf("gowave-node v%s", AppVersion), []string{
+		"Docs → https://aaasazan.github.io/gowave-docs/\nSource → https://github.com/aaaSaZaN/gowave-node",
 		fmt.Sprintf("API Port: %d (mTLS TLSv1.3)", cfg.NodePort),
 		fmt.Sprintf("Xray Core: v%s\nXray Path: %s", ver, processMgr.GetExecPath()),
 		fmt.Sprintf("%dC, %s, %d MB RAM", sysInfo.CPUs, sysInfo.CPUModel, sysInfo.MemoryTotal/(1024*1024)),
@@ -241,13 +241,13 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("[SHUTDOWN] Shutting down Remnawave Node...")
+	log.Println("[SHUTDOWN] Shutting down gowave-node...")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	_ = server.Shutdown(ctx)
 	_ = processMgr.Stop()
-	log.Println("[SHUTDOWN] Remnawave Node terminated cleanly.")
+	log.Println("[SHUTDOWN] gowave-node terminated cleanly.")
 }
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
@@ -356,10 +356,10 @@ func newRouter(authMgr *auth.AuthManager, xrayCtrl *xray.Controller, statsSvc *s
 				return
 			}
 			repo := body.Repo
-			targetBinary := "remnanode"
+			targetBinary := "gowave-node"
 			destPath, _ := os.Executable()
 			if destPath == "" {
-				destPath = "/usr/local/bin/remnanode"
+				destPath = "/usr/local/bin/gowave-node"
 			}
 			destPath, _ = filepath.EvalSymlinks(destPath)
 

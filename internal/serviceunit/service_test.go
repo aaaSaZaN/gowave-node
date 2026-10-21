@@ -19,7 +19,7 @@ func TestInstallerMigratesExistingUnitAndKeepsBoundary(t *testing.T) {
 	// Ownership commands are observed; account lookup never touches system accounts.
 	mock := `#!/bin/sh
 case "${0##*/}" in
-id) case "$*" in "-u") echo 0 ;; "-u remnanode") echo 10001 ;; esac ;;
+id) case "$*" in "-u") echo 0 ;; "-u gowave-node") echo 10001 ;; esac ;;
 *) printf '%s %s\n' "${0##*/}" "$*" >> "$SERVICE_TEST_EVENTS" ;;
 esac
 `
@@ -32,7 +32,7 @@ esac
 	events := filepath.Join(root, "events")
 	t.Setenv("SERVICE_TEST_EVENTS", events)
 	oldUnit := "[Service]\nUser=root\nEnvironment=EXISTING_SETTING=preserved\n"
-	unit := filepath.Join(units, "remnanode.service")
+	unit := filepath.Join(units, "gowave-node.service")
 	if err := os.WriteFile(unit, []byte(oldUnit), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -43,11 +43,11 @@ esac
 			t.Fatalf("install: %v: %s", err, out)
 		}
 	}
-	data, err := os.ReadFile(filepath.Join(units, "remnanode.service.d/90-unprivileged.conf"))
+	data, err := os.ReadFile(filepath.Join(units, "gowave-node.service.d/90-unprivileged.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, directive := range []string{"User=remnanode", "Group=remnanode", "ProtectSystem=strict", "ProtectHome=true", "PrivateDevices=true", "PrivateTmp=true", "NoNewPrivileges=true", "MemoryDenyWriteExecute=true", "ReadWritePaths=" + dir, "Restart=always"} {
+	for _, directive := range []string{"User=gowave-node", "Group=gowave-node", "ProtectSystem=strict", "ProtectHome=true", "PrivateDevices=true", "PrivateTmp=true", "NoNewPrivileges=true", "MemoryDenyWriteExecute=true", "ReadWritePaths=" + dir, "Restart=always"} {
 		if !strings.Contains(string(data), directive+"\n") {
 			t.Errorf("missing %s", directive)
 		}
@@ -57,7 +57,7 @@ esac
 		t.Fatal("installer overwrote existing unit configuration")
 	}
 	calls, _ := os.ReadFile(events)
-	if !strings.Contains(string(calls), "chown -hR remnanode:remnanode "+dir) || !strings.Contains(string(calls), "systemctl daemon-reload") {
+	if !strings.Contains(string(calls), "chown -hR gowave-node:gowave-node "+dir) || !strings.Contains(string(calls), "systemctl daemon-reload") {
 		t.Fatalf("missing migration operations: %s", calls)
 	}
 	// A path pointing at the system binary directory must never be recursively chowned.
@@ -97,7 +97,7 @@ func TestNonSystemdAccountSetupUsesPortableTools(t *testing.T) {
 			}
 			mock := `#!/bin/sh
 case "${0##*/}" in
-id) case "$*" in "-u") echo 0 ;; "-u remnanode") echo 10001 ;; *) exit 1 ;; esac ;;
+id) case "$*" in "-u") echo 0 ;; "-u gowave-node") echo 10001 ;; *) exit 1 ;; esac ;;
 *) printf '%s %s\n' "${0##*/}" "$*" >> "$SERVICE_TEST_EVENTS" ;;
 esac
 `
@@ -118,7 +118,7 @@ esac
 				t.Fatal(err)
 			}
 			calls := string(data)
-			for _, operation := range []string{"addgroup -S remnanode", "adduser -S -D -H", "chown -hR remnanode:remnanode"} {
+			for _, operation := range []string{"addgroup -S gowave-node", "adduser -S -D -H", "chown -hR gowave-node:gowave-node"} {
 				if !strings.Contains(calls, operation) {
 					t.Errorf("missing %s: %s", operation, calls)
 				}

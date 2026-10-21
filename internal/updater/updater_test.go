@@ -51,39 +51,39 @@ func TestMatchAssetXray(t *testing.T) {
 	}
 }
 
-func TestMatchAssetRemnanode(t *testing.T) {
+func TestMatchAssetGoWaveNode(t *testing.T) {
 	assets := []ReleaseAsset{
-		{Name: "remnanode-linux-amd64"},
-		{Name: "remnanode-linux-arm64"},
-		{Name: "remnanode-linux-armv5"},
-		{Name: "remnanode-linux-armv6"},
-		{Name: "remnanode-linux-armv7"},
-		{Name: "remnanode-linux-riscv64"},
-		{Name: "remnanode-linux-mips"},
-		{Name: "remnanode-linux-mipsle"},
-		{Name: "remnanode-linux-mips64"},
-		{Name: "remnanode-linux-mips64le"},
+		{Name: "gowave-node-linux-amd64"},
+		{Name: "gowave-node-linux-arm64"},
+		{Name: "gowave-node-linux-armv5"},
+		{Name: "gowave-node-linux-armv6"},
+		{Name: "gowave-node-linux-armv7"},
+		{Name: "gowave-node-linux-riscv64"},
+		{Name: "gowave-node-linux-mips"},
+		{Name: "gowave-node-linux-mipsle"},
+		{Name: "gowave-node-linux-mips64"},
+		{Name: "gowave-node-linux-mips64le"},
 	}
 
 	tests := []struct {
 		arch     string
 		expected string
 	}{
-		{"amd64", "remnanode-linux-amd64"},
-		{"arm64", "remnanode-linux-arm64"},
-		{"arm", "remnanode-linux-armv7"},
-		{"armv7", "remnanode-linux-armv7"},
-		{"armv6", "remnanode-linux-armv6"},
-		{"armv5", "remnanode-linux-armv5"},
-		{"riscv64", "remnanode-linux-riscv64"},
-		{"mipsle", "remnanode-linux-mipsle"},
-		{"mips", "remnanode-linux-mips"},
-		{"mips64", "remnanode-linux-mips64"},
-		{"mips64le", "remnanode-linux-mips64le"},
+		{"amd64", "gowave-node-linux-amd64"},
+		{"arm64", "gowave-node-linux-arm64"},
+		{"arm", "gowave-node-linux-armv7"},
+		{"armv7", "gowave-node-linux-armv7"},
+		{"armv6", "gowave-node-linux-armv6"},
+		{"armv5", "gowave-node-linux-armv5"},
+		{"riscv64", "gowave-node-linux-riscv64"},
+		{"mipsle", "gowave-node-linux-mipsle"},
+		{"mips", "gowave-node-linux-mips"},
+		{"mips64", "gowave-node-linux-mips64"},
+		{"mips64le", "gowave-node-linux-mips64le"},
 	}
 
 	for _, tc := range tests {
-		a, err := MatchAsset(assets, "linux", tc.arch, "remnanode")
+		a, err := MatchAsset(assets, "linux", tc.arch, "gowave-node")
 		if err != nil {
 			t.Fatalf("arch %s: unexpected error: %v", tc.arch, err)
 		}

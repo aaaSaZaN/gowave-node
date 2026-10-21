@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/remnawave/node-go/internal/config"
+	"github.com/aaaSaZaN/gowave-node/internal/config"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,14 +25,14 @@ func RestartNodeProcess() error {
 	if _, err := os.Stat("/run/service/node/supervise/control"); err == nil {
 		cmd = exec.CommandContext(ctx, "/command/s6-svc", "-t", "/run/service/node")
 	} else if _, err := os.Stat("/run/systemd/system"); err == nil {
-		cmd = exec.CommandContext(ctx, "systemctl", "restart", "remnanode")
-	} else if _, err := os.Stat("/etc/init.d/remnanode"); err == nil {
+		cmd = exec.CommandContext(ctx, "systemctl", "restart", "gowave-node")
+	} else if _, err := os.Stat("/etc/init.d/gowave-node"); err == nil {
 		// OpenRC and OpenWrt procd services installed by install.sh.
-		cmd = exec.CommandContext(ctx, "/etc/init.d/remnanode", "restart")
+		cmd = exec.CommandContext(ctx, "/etc/init.d/gowave-node", "restart")
 	} else if _, err := exec.LookPath("systemctl"); err == nil {
-		cmd = exec.CommandContext(ctx, "systemctl", "restart", "remnanode")
+		cmd = exec.CommandContext(ctx, "systemctl", "restart", "gowave-node")
 	} else {
-		return fmt.Errorf("no supported service manager; restart remnanode manually")
+		return fmt.Errorf("no supported service manager; restart gowave-node manually")
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -66,7 +66,7 @@ func ScheduleRestart(target string, core bool) error {
 	}
 	exe := monitor.Name()
 	if _, err := exec.LookPath("systemd-run"); err == nil {
-		cmd := exec.Command("systemd-run", "--quiet", "--collect", "--setenv=REMNANODE_RUNTIME_DIR="+config.RuntimeDir(), "--unit=remnanode-update-"+fmt.Sprint(time.Now().UnixNano()), exe, "_finish-update", target, fmt.Sprint(core), fmt.Sprint(os.Getpid()))
+		cmd := exec.Command("systemd-run", "--quiet", "--collect", "--setenv=GOWAVE_NODE_RUNTIME_DIR="+config.RuntimeDir(), "--unit=gowave-node-update-"+fmt.Sprint(time.Now().UnixNano()), exe, "_finish-update", target, fmt.Sprint(core), fmt.Sprint(os.Getpid()))
 		if out, err := cmd.CombinedOutput(); err != nil {
 			os.Remove(exe)
 			return fmt.Errorf("schedule update: %w: %s", err, out)
@@ -159,9 +159,9 @@ func ReadUpdateRequest() (UpdateRequest, error) {
 // IsManagedService also detects native CLI invocations, which do not inherit
 // the daemon's Environment= settings from systemd.
 func IsManagedService() bool {
-	if os.Getenv("REMNANODE_MANAGED_SERVICE") == "1" {
+	if os.Getenv("GOWAVE_NODE_MANAGED_SERVICE") == "1" {
 		return true
 	}
-	_, err := os.Stat("/etc/systemd/system/remnanode-restart.path")
+	_, err := os.Stat("/etc/systemd/system/gowave-node-restart.path")
 	return err == nil
 }

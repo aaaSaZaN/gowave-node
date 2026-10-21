@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/remnawave/node-go/internal/apiutil"
+	"github.com/aaaSaZaN/gowave-node/internal/apiutil"
 	"net/http"
 	"time"
 
-	"github.com/remnawave/node-go/internal/plugin"
-	"github.com/remnawave/node-go/internal/xray"
+	"github.com/aaaSaZaN/gowave-node/internal/plugin"
+	"github.com/aaaSaZaN/gowave-node/internal/xray"
 )
 
 type StatsService struct {

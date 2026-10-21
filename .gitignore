@@ -1,6 +1,6 @@
 bin/
-/remnanode
-/remnanode-*
+/gowave-node
+/gowave-node-*
 *.exe
 *.test
 *.out

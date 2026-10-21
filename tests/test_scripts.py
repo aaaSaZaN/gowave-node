@@ -14,9 +14,9 @@ INSTALLER = ROOT/'install.sh'
 NODE = b'''#!/bin/sh
 set -e
 case "$1" in
-version) echo 'Remnawave Node (Go) vtest' ;;
+version) echo 'gowave-node vtest' ;;
 core) printf '#!/bin/sh\\nexit 0\\n' > "$(dirname "$0")/rw-core"; chmod +x "$(dirname "$0")/rw-core" ;;
-service) sh "$REMNANODE_SERVICE_INSTALLER" "$3" "$4" "" "${5:-systemd}" ;;
+service) sh "$GOWAVE_NODE_SERVICE_INSTALLER" "$3" "$4" "" "${5:-systemd}" ;;
 status) [ "${MOCK_READY:-1}" = 1 ] ;;
 esac
 '''
@@ -27,14 +27,14 @@ args=sys.argv[1:]
 root=pathlib.Path(os.environ['MOCK_ROOT'])
 with open(root/'events','a') as log:log.write(name+' '+' '.join(args)+'\\n')
 env=['SECRET_KEY=test','NODE_PORT=3000','NFTABLES_LOGGING=false','PATH=/usr/bin']
-if name=='id':print('10001' if 'remnanode' in args else '0')
+if name=='id':print('10001' if 'gowave-node' in args else '0')
 elif name in ('chown','getent','groupadd','useradd','ujail'):pass
 elif name=='cp':
  subprocess.run(['/bin/cp',*args],check=True)
  # Model rc.common without writing to the host's /etc. Preserve the original
  # generated script separately so assertions still check the real template.
  dest=pathlib.Path(args[-1])
- if dest.parent==root/'init.d' and dest.name=='remnanode.new':
+ if dest.parent==root/'init.d' and dest.name=='gowave-node.new':
   text=dest.read_text()
   if text.startswith('#!/bin/sh /etc/rc.common'):
    (root/'procd-template').write_text(text)
@@ -60,7 +60,7 @@ elif name=='ss':
 elif name=='docker':
  docker=os.environ.get('MOCK_DOCKER','1')=='1'
  if args[0]=='info' and not docker:sys.exit(1)
- elif args[0]=='ps':print('old-node\\tremnawave/node:3.4.2')
+ elif args[0]=='ps':print('old-node\\t'+os.environ.get('MOCK_DOCKER_IMAGE','remnawave/node:3.4.2'))
  elif args[0]=='inspect':
   template=args[args.index('-f')+1]
   if 'len ' in template:print(len(env))
@@ -108,7 +108,7 @@ case $action in
 esac
 """)
         assets=root/'assets'
-        (assets/f'remnanode-linux-{arch}').write_bytes(NODE)
+        (assets/f'gowave-node-linux-{arch}').write_bytes(NODE)
         if asn:
             with zipfile.ZipFile(assets/'asn-prefixes.zip','w') as archive:
                 archive.writestr('64500.json','{"ipv4":[],"ipv6":[]}')
@@ -116,11 +116,11 @@ esac
         if corrupt:
             checksums=checksums.replace(hashlib.sha256(NODE).hexdigest(),'0'*64)
         (assets/manifest).write_text(checksums)
-        env=dict(os.environ,PATH=str(root/'bin')+':'+os.environ['PATH'],MOCK_ROOT=str(root),REMNANODE_INIT='systemd',
-                 REMNANODE_SERVICE_INSTALLER=str(ROOT/'internal/serviceunit/install.sh'),
-                 REMNANODE_INSTALL_DIR=str(root/'install'),REMNANODE_PREFIX=str(root/'prefix'),
-                 REMNANODE_SYSTEMD_DIR=str(root/'units'),REMNANODE_INITD_DIR=str(root/'init.d'),
-                 REMNANODE_CONFIG_DIR=str(root/'config'),REMNANODE_RUNTIME_DIR=str(root/'run'))
+        env=dict(os.environ,PATH=str(root/'bin')+':'+os.environ['PATH'],MOCK_ROOT=str(root),GOWAVE_NODE_INIT='systemd',
+                 GOWAVE_NODE_SERVICE_INSTALLER=str(ROOT/'internal/serviceunit/install.sh'),
+                 GOWAVE_NODE_INSTALL_DIR=str(root/'install'),GOWAVE_NODE_PREFIX=str(root/'prefix'),
+                 GOWAVE_NODE_SYSTEMD_DIR=str(root/'units'),GOWAVE_NODE_INITD_DIR=str(root/'init.d'),
+                 GOWAVE_NODE_CONFIG_DIR=str(root/'config'),GOWAVE_NODE_RUNTIME_DIR=str(root/'run'))
         env.pop('SECRET_KEY',None)
         env.pop('NODE_PORT',None)
         env.update(environment)
@@ -137,9 +137,9 @@ esac
         self.assertIn('docker update --restart=unless-stopped old-node',events)
         self.assertIn('docker start old-node',events)
         self.assertNotIn('Node is ready',result.stdout)
-        self.assertFalse((root/'install/remnanode').exists())
-        self.assertFalse((root/'units/remnanode.service').exists())
-        self.assertFalse((root/'units/remnanode.service.d/90-unprivileged.conf').exists())
+        self.assertFalse((root/'install/gowave-node').exists())
+        self.assertFalse((root/'units/gowave-node.service').exists())
+        self.assertFalse((root/'units/gowave-node.service.d/90-unprivileged.conf').exists())
 
     def test_migration_success_and_rerun(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -152,22 +152,30 @@ esac
             self.assertIn('SECRET_KEY=test',settings)
             self.assertNotIn('PATH=',settings)
             self.assertEqual((root/'install/.env').stat().st_mode&0o777,0o600)
-            self.assertIn('ExecStart='+str(root/'install/remnanode'),(root/'units/remnanode.service').read_text())
-            policy=(root/'units/remnanode.service.d/90-unprivileged.conf').read_text()
-            for directive in ['User=remnanode','ProtectSystem=strict','ProtectHome=true','PrivateDevices=true','PrivateTmp=true','NoNewPrivileges=true','MemoryDenyWriteExecute=true','CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW']:
+            self.assertIn('ExecStart='+str(root/'install/gowave-node'),(root/'units/gowave-node.service').read_text())
+            policy=(root/'units/gowave-node.service.d/90-unprivileged.conf').read_text()
+            for directive in ['User=gowave-node','ProtectSystem=strict','ProtectHome=true','PrivateDevices=true','PrivateTmp=true','NoNewPrivileges=true','MemoryDenyWriteExecute=true','CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW']:
                 self.assertIn(directive,policy)
-            self.assertNotIn('User=root',(root/'units/remnanode.service').read_text())
-            self.assertIn('User=remnanode',(root/'units/remnanode-update.service').read_text())
-            self.assertIn('enable --now remnanode-restart.path remnanode-update.path',events)
-            self.assertIn('chown -hR remnanode:remnanode',events)
+            self.assertNotIn('User=root',(root/'units/gowave-node.service').read_text())
+            self.assertIn('User=gowave-node',(root/'units/gowave-node-update.service').read_text())
+            self.assertIn('enable --now gowave-node-restart.path gowave-node-update.path',events)
+            self.assertIn('chown -hR gowave-node:gowave-node',events)
             self.assertIn('docker stop -t 10 old-node',events)
-            self.assertEqual(os.readlink(root/'prefix/bin/remnanode'),str(root/'install/remnanode'))
+            self.assertEqual(os.readlink(root/'prefix/bin/gowave-node'),str(root/'install/gowave-node'))
             self.assertTrue((root/'prefix/share/asn/asn-prefixes.zip').exists())
 
     def test_migration_readiness_rollback(self):
         with tempfile.TemporaryDirectory() as directory:
             root=pathlib.Path(directory)
             self.assert_rolled_back(root,*self.run_installer(root,MOCK_READY='0'))
+
+    def test_migration_from_gowave_node_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            result,events=self.run_installer(root,MOCK_DOCKER_IMAGE='ghcr.io/aaaSaZaN/gowave-node:latest')
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertIn('docker stop -t 10 old-node',events)
+            self.assertIn('https://github.com/aaaSaZaN/gowave-node/releases/latest/download/gowave-node-linux-amd64',events)
 
     def test_migration_restart_failure_rollback(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -189,7 +197,7 @@ esac
             result,events=self.run_installer(root,MOCK_DOCKER='0')
             self.assertNotEqual(result.returncode,0)
             self.assertIn('SECRET_KEY is required',result.stderr)
-            self.assertFalse((root/'install/remnanode').exists())
+            self.assertFalse((root/'install/gowave-node').exists())
             self.assertNotIn('curl',events)
 
     def test_release_without_asn_and_with_sha256sums(self):
@@ -205,9 +213,9 @@ esac
             root=pathlib.Path(directory)
             result,events=self.run_installer(root,corrupt=True)
             self.assertNotEqual(result.returncode,0)
-            self.assertIn('Checksum mismatch for remnanode-linux-amd64',result.stderr)
+            self.assertIn('Checksum mismatch for gowave-node-linux-amd64',result.stderr)
             self.assertNotIn('docker stop',events)
-            self.assertFalse((root/'install/remnanode').exists())
+            self.assertFalse((root/'install/gowave-node').exists())
 
     def test_mips_byte_order_detection(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -215,7 +223,7 @@ esac
             # The test host shell is a 64-bit little-endian ELF.
             result,events=self.run_installer(root,arch='mips64le',MOCK_MACHINE='mips64')
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-            self.assertIn('remnanode-linux-mips64le',events)
+            self.assertIn('gowave-node-linux-mips64le',events)
 
     def test_arm_and_riscv_detection(self):
         for machine,arch in [('armv6l','armv6'),('armv5tel','armv5'),('armv7l','armv7'),('riscv64','riscv64')]:
@@ -223,42 +231,42 @@ esac
                 root=pathlib.Path(directory)
                 result,events=self.run_installer(root,arch=arch,MOCK_MACHINE=machine)
                 self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-                self.assertIn('remnanode-linux-'+arch+'\n',events)
+                self.assertIn('gowave-node-linux-'+arch+'\n',events)
 
     def test_openrc_service(self):
         with tempfile.TemporaryDirectory() as directory:
             root=pathlib.Path(directory)
-            result,events=self.run_installer(root,REMNANODE_INIT='openrc')
+            result,events=self.run_installer(root,GOWAVE_NODE_INIT='openrc')
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-            script=(root/'init.d/remnanode').read_text()
+            script=(root/'init.d/gowave-node').read_text()
             self.assertTrue(script.startswith('#!/sbin/openrc-run\n'))
-            self.assertIn('command="'+str(root/'install/remnanode')+'"',script)
-            self.assertEqual((root/'init.d/remnanode').stat().st_mode&0o777,0o755)
-            self.assertIn('command_user="remnanode:remnanode"',script)
+            self.assertIn('command="'+str(root/'install/gowave-node')+'"',script)
+            self.assertEqual((root/'init.d/gowave-node').stat().st_mode&0o777,0o755)
+            self.assertIn('command_user="gowave-node:gowave-node"',script)
             self.assertIn('capabilities="^cap_net_bind_service,^cap_net_admin,^cap_net_raw"',script)
             self.assertIn('no_new_privs=true',script)
-            self.assertIn('checkpath -d -m 0700 -o remnanode:remnanode',script)
-            self.assertIn('chown -hR remnanode:remnanode',events)
+            self.assertIn('checkpath -d -m 0700 -o gowave-node:gowave-node',script)
+            self.assertIn('chown -hR gowave-node:gowave-node',events)
             self.assertNotIn('systemctl daemon-reload',events)
-            self.assertFalse((root/'units/remnanode.service.d').exists())
-            self.assertIn('rc-update add remnanode default',events)
-            self.assertIn('rc-service remnanode restart',events)
+            self.assertFalse((root/'units/gowave-node.service.d').exists())
+            self.assertIn('rc-update add gowave-node default',events)
+            self.assertIn('rc-service gowave-node restart',events)
 
     def test_procd_service(self):
         with tempfile.TemporaryDirectory() as directory:
             root=pathlib.Path(directory)
-            result,events=self.run_installer(root,REMNANODE_INIT='procd')
+            result,events=self.run_installer(root,GOWAVE_NODE_INIT='procd')
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             script=(root/'procd-template').read_text()
             self.assertTrue(script.startswith('#!/bin/sh /etc/rc.common\n'))
-            self.assertIn('-U remnanode -G remnanode',script)
-            self.assertIn('-c -- "'+str(root/'install/remnanode')+'"',script)
-            self.assertIn('chown remnanode:remnanode "'+str(root/'run')+'"',script)
+            self.assertIn('-U gowave-node -G gowave-node',script)
+            self.assertIn('-c -- "'+str(root/'install/gowave-node')+'"',script)
+            self.assertIn('chown gowave-node:gowave-node "'+str(root/'run')+'"',script)
             expected=['CAP_NET_BIND_SERVICE','CAP_NET_ADMIN','CAP_NET_RAW']
             policy=json.loads((root/'config/capabilities.json').read_text())
             self.assertEqual(set(policy),{'bounding','effective','inheritable','permitted','ambient'})
             for capabilities in policy.values():self.assertEqual(capabilities,expected)
-            self.assertIn('chown -hR remnanode:remnanode',events)
+            self.assertIn('chown -hR gowave-node:gowave-node',events)
             self.assertIn('chown root:root '+str(root/'config'),events)
             self.assertIn('procd restart',events)
             self.assertIn('procd_param command '+str(root/'bin/ujail'),events)
@@ -268,7 +276,7 @@ esac
     def test_procd_rejects_node_writable_capability_policy(self):
         with tempfile.TemporaryDirectory() as directory:
             root=pathlib.Path(directory)
-            result,events=self.run_installer(root,REMNANODE_INIT='procd',REMNANODE_CONFIG_DIR=str(root/'install/policy'))
+            result,events=self.run_installer(root,GOWAVE_NODE_INIT='procd',GOWAVE_NODE_CONFIG_DIR=str(root/'install/policy'))
             self.assertNotEqual(result.returncode,0)
             self.assertIn('Capability policy must be outside',result.stderr)
             self.assertNotIn('docker stop',events)
@@ -283,22 +291,22 @@ esac
             if os.geteuid()==0:os.chown(old_env,65534,65534)
             before=old_env.stat()
             old_node=NODE+b'# previous native node\n'
-            (install/'remnanode').write_bytes(old_node);(install/'remnanode').chmod(0o755)
+            (install/'gowave-node').write_bytes(old_node);(install/'gowave-node').chmod(0o755)
             units=root/'units';units.mkdir()
-            unit='[Service]\nUser=remnanode\n'
-            (units/'remnanode.service').write_text(unit)
-            policy_dir=units/'remnanode.service.d';policy_dir.mkdir()
-            policy=policy_dir/'90-unprivileged.conf';policy.write_text('[Service]\nUser=remnanode\n# previous policy\n')
+            unit='[Service]\nUser=gowave-node\n'
+            (units/'gowave-node.service').write_text(unit)
+            policy_dir=units/'gowave-node.service.d';policy_dir.mkdir()
+            policy=policy_dir/'90-unprivileged.conf';policy.write_text('[Service]\nUser=gowave-node\n# previous policy\n')
             result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_NATIVE_ACTIVE='1',MOCK_READY='0')
             self.assertNotEqual(result.returncode,0)
             self.assertEqual(old_env.read_text(),'SECRET_KEY=previous-secret\nNODE_PORT=2222\n')
             after=old_env.stat()
             self.assertEqual((after.st_uid,after.st_gid,after.st_mode&0o777),(before.st_uid,before.st_gid,before.st_mode&0o777))
-            self.assertEqual((install/'remnanode').read_bytes(),old_node)
-            self.assertEqual((units/'remnanode.service').read_text(),unit)
-            self.assertEqual(policy.read_text(),'[Service]\nUser=remnanode\n# previous policy\n')
+            self.assertEqual((install/'gowave-node').read_bytes(),old_node)
+            self.assertEqual((units/'gowave-node.service').read_text(),unit)
+            self.assertEqual(policy.read_text(),'[Service]\nUser=gowave-node\n# previous policy\n')
             self.assertIn('cp -p '+str(old_env),events)
-            self.assertEqual(events.count('systemctl restart remnanode\n'),2)
+            self.assertEqual(events.count('systemctl restart gowave-node\n'),2)
 
 
     def test_fresh_install_rejects_busy_port(self):
@@ -307,9 +315,9 @@ esac
             result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_PORT_BUSY='1',SECRET_KEY='abc',NODE_PORT='2222')
             self.assertNotEqual(result.returncode,0)
             self.assertIn('NODE_PORT 2222 is already in use',result.stdout+result.stderr)
-            self.assertFalse((root/'install/remnanode').exists())
-            self.assertFalse((root/'units/remnanode.service').exists())
-        self.assertFalse((root/'units/remnanode.service.d/90-unprivileged.conf').exists())
+            self.assertFalse((root/'install/gowave-node').exists())
+            self.assertFalse((root/'units/gowave-node.service').exists())
+        self.assertFalse((root/'units/gowave-node.service.d/90-unprivileged.conf').exists())
 
     def test_fresh_install_reports_node_not_listening(self):
         with tempfile.TemporaryDirectory() as directory:

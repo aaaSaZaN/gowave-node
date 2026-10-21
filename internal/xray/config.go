@@ -35,10 +35,10 @@ func GenerateApiConfig(
 
 	apiListen := internal.XtlsApiSocketPath
 	if apiListen == "" {
-		apiListen = "/run/remnanode/xray.sock"
+		apiListen = "/run/gowave-node/xray.sock"
 	}
 	api := map[string]interface{}{
-		"tag":      "REMNAWAVE_API",
+		"tag":      "GOWAVE_NODE_API",
 		"services": []string{"HandlerService", "StatsService", "RoutingService"},
 	}
 	unixAPI := !strings.Contains(apiListen, ":") || strings.HasPrefix(apiListen, "unix:")
@@ -86,7 +86,7 @@ func GenerateApiConfig(
 		}
 		// Older stable cores require an explicit UNIX network and nonzero
 		// nominal destination port; the API routing rule consumes the connection.
-		inbounds = append(inbounds, map[string]interface{}{"tag": "REMNAWAVE_API_INBOUND", "listen": listen, "protocol": "tunnel", "settings": map[string]interface{}{"network": "unix", "address": "127.0.0.1", "port": 1}})
+		inbounds = append(inbounds, map[string]interface{}{"tag": "GOWAVE_NODE_API_INBOUND", "listen": listen, "protocol": "tunnel", "settings": map[string]interface{}{"network": "unix", "address": "127.0.0.1", "port": 1}})
 	}
 	if existingInbounds, ok := baseConfig["inbounds"].([]interface{}); ok {
 		inbounds = append(inbounds, existingInbounds...)
@@ -102,14 +102,14 @@ func GenerateApiConfig(
 	// routing rules
 	var rules []interface{}
 	if unixAPI {
-		rules = append(rules, map[string]interface{}{"inboundTag": []string{"REMNAWAVE_API_INBOUND"}, "outboundTag": "REMNAWAVE_API"})
+		rules = append(rules, map[string]interface{}{"inboundTag": []string{"GOWAVE_NODE_API_INBOUND"}, "outboundTag": "GOWAVE_NODE_API"})
 	}
 
 	if existingRouting, ok := baseConfig["routing"].(map[string]interface{}); ok {
 		if existingRules, ok := existingRouting["rules"].([]interface{}); ok {
 			for _, r := range existingRules {
 				if rMap, ok := r.(map[string]interface{}); ok {
-					if rMap["outboundTag"] != "REMNAWAVE_API" {
+					if rMap["outboundTag"] != "GOWAVE_NODE_API" {
 						rules = append(rules, rMap)
 					}
 				}

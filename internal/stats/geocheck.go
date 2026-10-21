@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/remnawave/node-go/internal/updater"
+	"github.com/aaaSaZaN/gowave-node/internal/updater"
 )
 
 // geocheckPath is where the upstream node image and older installers put

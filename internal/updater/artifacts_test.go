@@ -15,9 +15,9 @@ import (
 
 func TestAssetSelectionRejectsWrongProductOSAndChecksums(t *testing.T) {
 	for _, assets := range [][]ReleaseAsset{
-		{{Name: "remnanode-linux-amd64.sha256"}}, {{Name: "unrelated-linux-amd64"}}, {{Name: "remnanode-windows-amd64"}}, {{Name: "remnanode-linux-arm64"}},
+		{{Name: "gowave-node-linux-amd64.sha256"}}, {{Name: "unrelated-linux-amd64"}}, {{Name: "gowave-node-windows-amd64"}}, {{Name: "gowave-node-linux-arm64"}},
 	} {
-		if asset, err := MatchAsset(assets, "linux", "amd64", "remnanode"); err == nil {
+		if asset, err := MatchAsset(assets, "linux", "amd64", "gowave-node"); err == nil {
 			t.Fatalf("accepted %s", asset.Name)
 		}
 	}
@@ -88,15 +88,15 @@ func TestStockUpgradeRemainsDefault(t *testing.T) {
 	}
 }
 func TestVerifiedRawDownloadIsExecutable(t *testing.T) {
-	content := []byte("#!/bin/sh\necho 'Remnawave Node (Go) vtest'\n")
+	content := []byte("#!/bin/sh\necho 'gowave-node vtest'\n")
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(content) }))
 	defer server.Close()
 	previous := HTTPClient
 	HTTPClient = server.Client()
 	defer func() { HTTPClient = previous }()
 	sum := sha256.Sum256(content)
-	asset := ReleaseAsset{Name: "remnanode-linux-amd64", BrowserDownloadURL: server.URL + "/binary", Digest: "sha256:" + hex.EncodeToString(sum[:])}
-	path, err := DownloadReleaseBinary(ReleaseInfo{}, asset, "remnanode")
+	asset := ReleaseAsset{Name: "gowave-node-linux-amd64", BrowserDownloadURL: server.URL + "/binary", Digest: "sha256:" + hex.EncodeToString(sum[:])}
+	path, err := DownloadReleaseBinary(ReleaseInfo{}, asset, "gowave-node")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestVerifiedRawDownloadIsExecutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	asset.Digest = "sha256:" + strings.Repeat("0", 64)
-	if path, err := DownloadReleaseBinary(ReleaseInfo{}, asset, "remnanode"); err == nil {
+	if path, err := DownloadReleaseBinary(ReleaseInfo{}, asset, "gowave-node"); err == nil {
 		os.Remove(path)
 		t.Fatal("accepted mismatched digest")
 	}

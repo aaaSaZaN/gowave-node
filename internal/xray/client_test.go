@@ -3,9 +3,9 @@ package xray
 import (
 	"context"
 	"errors"
-	"github.com/remnawave/node-go/internal/testutil"
-	stats "github.com/remnawave/node-go/internal/xrayapi"
-	hysteria "github.com/remnawave/node-go/internal/xrayapi/hysteria"
+	"github.com/aaaSaZaN/gowave-node/internal/testutil"
+	stats "github.com/aaaSaZaN/gowave-node/internal/xrayapi"
+	hysteria "github.com/aaaSaZaN/gowave-node/internal/xrayapi/hysteria"
 	proxymancommand "github.com/xtls/xray-core/app/proxyman/command"
 	"google.golang.org/protobuf/proto"
 	"os"

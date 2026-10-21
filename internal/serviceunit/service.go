@@ -46,7 +46,7 @@ func MigrateLegacy() (bool, error) {
 		return true, err
 	}
 	if dir == "/" {
-		dir = "/opt/remnanode"
+		dir = "/opt/gowave-node"
 	}
 	if err := Install(dir, "/etc/systemd/system"); err != nil {
 		return true, fmt.Errorf("migrate unprivileged service: %w", err)

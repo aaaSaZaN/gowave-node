@@ -1,11 +1,11 @@
 # Repository context
 
-This is Remnanode, a Go implementation of the Remnawave node control plane with
-Remnawave Node v3.4.2 as its compatibility baseline. Xray runs as a separate
+This is gowave-node, the Go node control plane for GoWave with
+the v3.4.2 node protocol as its compatibility baseline. Xray runs as a separate
 executable, not as an embedded Go server. Native Linux/systemd is the primary
 deployment; existing s6 installations are also supported. The Go module path is
-`github.com/remnawave/node-go`, while published node assets come from
-`aaaSaZaN/remnanode-go`.
+`github.com/aaaSaZaN/gowave-node`, while published node assets come from
+`aaaSaZaN/gowave-node`.
 
 No pre-existing agent, Cursor, Claude, or Copilot rule files were found during
 this analysis. See `README.md` for the environment variable table and operator
@@ -17,7 +17,7 @@ use the actual CI and tests for validation details.
 Run from the repository root with the Go version in `go.mod` (currently 1.27.1).
 
 ```sh
-CGO_ENABLED=0 go build -trimpath -o remnanode ./cmd/remnanode
+CGO_ENABLED=0 go build -trimpath -o gowave-node ./cmd/gowave-node
 go test -race ./...
 go vet ./...
 shellcheck install.sh scripts/*.sh
@@ -29,22 +29,22 @@ command. There is no Makefile or separate Go lint configuration. CI's checks are
 defined in `.github/workflows/ci.yml`.
 
 Real-core integration is opt-in; the regular suite skips it without
-`REMNANODE_TEST_CORE`. The fetch helper verifies a release digest and supports
+`GOWAVE_NODE_TEST_CORE`. The fetch helper verifies a release digest and supports
 the host architectures x86_64 and aarch64:
 
 ```sh
-python3 scripts/fetch-test-core.py v26.7.28 /tmp/remnanode-core
-REMNANODE_TEST_CORE=/tmp/remnanode-core/rw-core go test -race ./internal/xray -run RealCore -v
+python3 scripts/fetch-test-core.py v26.7.28 /tmp/gowave-node-core
+GOWAVE_NODE_TEST_CORE=/tmp/gowave-node-core/rw-core go test -race ./internal/xray -run RealCore -v
 ```
 
 For HTTPS smoke tests, reproduce CI's isolated native and s6 runs:
 
 ```sh
 python3 scripts/fetch-test-core.py v26.7.28 .smoke
-CGO_ENABLED=0 go build -o .smoke/remnanode ./cmd/remnanode
-docker build -f tests/smoke/Dockerfile -t remnanode-smoke .
-docker run --rm --cap-drop=ALL remnanode-smoke native
-docker run --rm --cap-drop=ALL remnanode-smoke s6
+CGO_ENABLED=0 go build -o .smoke/gowave-node ./cmd/gowave-node
+docker build -f tests/smoke/Dockerfile -t gowave-node-smoke .
+docker run --rm --cap-drop=ALL gowave-node-smoke native
+docker run --rm --cap-drop=ALL gowave-node-smoke s6
 ```
 
 CI runs both the baseline core above and `latest` on amd64 and arm64. The Docker
@@ -53,7 +53,7 @@ candidate. `.smoke/`, `dist/`, and root build outputs are ignored artifacts.
 
 ## Architecture and execution flow
 
-- `cmd/remnanode/main.go` dispatches CLI commands, wires the services, defines
+- `cmd/gowave-node/main.go` dispatches CLI commands, wires the services, defines
   `newRouter`, and handles shutdown. No command starts the daemon with Xray
   already configured: the panel supplies configuration through `/node/xray/start`.
 - `internal/config`, `auth`, and `tlsutil` decode and verify the panel's
@@ -93,7 +93,7 @@ candidate. `.smoke/`, `dist/`, and root build outputs are ignored artifacts.
   distinctions, and status codes. Several operations report failure inside HTTP
   200 responses. In particular, user mutation errors use
   `response: {success: false, error: ...}` rather than a generic HTTP error.
-  Consult `cmd/remnanode/router_test.go` before altering endpoint contracts and
+  Consult `cmd/gowave-node/router_test.go` before altering endpoint contracts and
   the service tests for deeper behavior.
 - Request types typically implement `Validate() error`; `apiutil.Decode` invokes
   it after decoding and rejects trailing JSON values. `apiutil.Error` produces
@@ -127,14 +127,14 @@ candidate. `.smoke/`, `dist/`, and root build outputs are ignored artifacts.
 ## Runtime and deployment gotchas
 
 - `.env` lookup order is working directory, executable directory,
-  `/opt/remnanode/.env`, then `/etc/remnanode/.env`; values already present in the
+  `/opt/gowave-node/.env`, then `/etc/gowave-node/.env`; values already present in the
   process environment win, and earlier files win over later ones.
 - `SECRET_KEY` is a base64 JSON certificate/key payload, not a plain shared
   password. Starting the daemon also performs core/geodata discovery and can
   download missing assets. Prefer the isolated smoke harness for full startup
   testing.
-- The default runtime directory is `/run/remnanode`; override it with
-  `REMNANODE_RUNTIME_DIR` in isolated environments. Private directories must be
+- The default runtime directory is `/run/gowave-node`; override it with
+  `GOWAVE_NODE_RUNTIME_DIR` in isolated environments. Private directories must be
   owned by the current user and cannot be symlinks. Config/discovery writes are
   staged privately and renamed. Runtime config is `xray.json` there, not
   `/etc/xray/config.json`.

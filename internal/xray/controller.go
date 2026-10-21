@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/remnawave/node-go/internal/apiutil"
-	"github.com/remnawave/node-go/internal/updater"
+	"github.com/aaaSaZaN/gowave-node/internal/apiutil"
+	"github.com/aaaSaZaN/gowave-node/internal/updater"
 	"log"
 	"net/http"
 	"os"
@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/remnawave/node-go/internal/config"
-	"github.com/remnawave/node-go/internal/integration"
+	"github.com/aaaSaZaN/gowave-node/internal/config"
+	"github.com/aaaSaZaN/gowave-node/internal/integration"
 )
 
 type PluginInterface interface {

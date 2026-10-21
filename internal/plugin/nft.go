@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/remnawave/node-go/internal/updater"
+	"github.com/aaaSaZaN/gowave-node/internal/updater"
 	"log"
 	"net/netip"
 	"os/exec"
@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	TableName               = "remnanode"
+	TableName               = "gowave-node"
 	TorrentBlockerSetName   = "torrent-blocker"
 	IngressFilterIPSetName  = "ingress-filter-ip"
 	EgressFilterIPSetName   = "egress-filter-ip"
@@ -86,7 +86,7 @@ func (m *NftManager) tableScript() string {
 	}
 	drop := "counter drop"
 	if m.logging {
-		drop = "log prefix \"remnanode \" " + drop
+		drop = "log prefix \"gowave-node \" " + drop
 	}
 	for _, set := range []string{IngressFilterIPSetName, TorrentBlockerSetName} {
 		lines = append(lines, fmt.Sprintf("add rule inet %s prerouting ip saddr @%s %s", TableName, set, drop), fmt.Sprintf("add rule inet %s prerouting ip6 saddr @%s-v6 %s", TableName, set, drop))

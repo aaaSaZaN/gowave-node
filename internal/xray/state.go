@@ -5,7 +5,7 @@ import (
 	"log"
 	"sync"
 
-	"github.com/remnawave/node-go/internal/hashedset"
+	"github.com/aaaSaZaN/gowave-node/internal/hashedset"
 )
 
 type InboundHashInfo struct {

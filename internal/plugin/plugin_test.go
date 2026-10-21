@@ -104,9 +104,9 @@ func TestDefaultConnectionExclusions(t *testing.T) {
 }
 
 func TestRealASNIndex(t *testing.T) {
-	path := os.Getenv("REMNANODE_TEST_ASN")
+	path := os.Getenv("GOWAVE_NODE_TEST_ASN")
 	if path == "" {
-		t.Skip("set REMNANODE_TEST_ASN for the real portable asset")
+		t.Skip("set GOWAVE_NODE_TEST_ASN for the real portable asset")
 	}
 	index := NewASNIndex(path)
 	prefixes, err := index.Resolve(13335)

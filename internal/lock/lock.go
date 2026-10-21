@@ -44,9 +44,9 @@ func ReleaseInstanceLock() {
 }
 
 func DuplicateInstanceMessage() string {
-	return "[WARN] Another instance of Remnawave Node is already running!"
+	return "[WARN] Another instance of gowave-node is already running!"
 }
 
 func PrintStartMessage(port int, xrayVersion string, cpus int, memTotal uint64) {
-	log.Printf("[START] Remnawave Node started on port :%d (Xray: %s, %d CPUs)", port, xrayVersion, cpus)
+	log.Printf("[START] gowave-node started on port :%d (Xray: %s, %d CPUs)", port, xrayVersion, cpus)
 }

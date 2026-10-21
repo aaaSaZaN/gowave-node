@@ -16,11 +16,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aaaSaZaN/gowave-node/internal/config"
+	"github.com/aaaSaZaN/gowave-node/internal/logger"
+	"github.com/aaaSaZaN/gowave-node/internal/plugin"
+	"github.com/aaaSaZaN/gowave-node/internal/xray"
 	"github.com/go-chi/chi/v5"
-	"github.com/remnawave/node-go/internal/config"
-	"github.com/remnawave/node-go/internal/logger"
-	"github.com/remnawave/node-go/internal/plugin"
-	"github.com/remnawave/node-go/internal/xray"
 )
 
 var sourceRegex = regexp.MustCompile(`^(?:(?:tcp|udp):)?(?:\[(.+?)\]|(.+?))(?::(\d+))?$`)

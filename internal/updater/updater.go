@@ -60,7 +60,7 @@ func FetchReleases(repo string) ([]ReleaseInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Remnawave-Node-Updater")
+	req.Header.Set("User-Agent", "gowave-node-updater")
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -88,12 +88,12 @@ func FetchReleases(repo string) ([]ReleaseInfo, error) {
 
 func MatchAsset(assets []ReleaseAsset, targetOS, targetArch, binaryName string) (*ReleaseAsset, error) {
 	names := []string{}
-	if binaryName == "remnanode" {
+	if binaryName == "gowave-node" {
 		arch := targetArch
 		if arch == "arm" {
 			arch = "armv7"
 		}
-		names = []string{"remnanode-" + targetOS + "-" + arch, "remnanode-" + targetOS + "-" + arch + ".tar.gz", "remnanode-" + targetOS + "-" + arch + ".zip"}
+		names = []string{"gowave-node-" + targetOS + "-" + arch, "gowave-node-" + targetOS + "-" + arch + ".tar.gz", "gowave-node-" + targetOS + "-" + arch + ".zip"}
 	}
 	if binaryName == "rw-core" && targetOS == "linux" {
 		arch := map[string]string{"amd64": "64", "386": "32", "arm": "arm32-v7a", "armv5": "arm32-v5", "armv6": "arm32-v6", "armv7": "arm32-v7a", "arm64": "arm64-v8a", "mips": "mips32", "mipsle": "mips32le", "mips64": "mips64", "mips64le": "mips64le", "riscv64": "riscv64"}[targetArch]
@@ -152,7 +152,7 @@ func saveBinary(data []byte, source, name string) (string, error) {
 }
 
 func GetStandardAssetDirs(extraDirs ...string) []string {
-	dirs := []string{"/usr/local/share/xray", "/opt/remnanode", "/usr/share/xray"}
+	dirs := []string{"/usr/local/share/xray", "/opt/gowave-node", "/usr/share/xray"}
 	if exe, err := os.Executable(); err == nil {
 		dirs = append([]string{filepath.Dir(exe)}, dirs...)
 	}

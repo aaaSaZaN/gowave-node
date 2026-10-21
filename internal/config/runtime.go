@@ -13,10 +13,10 @@ import (
 )
 
 func RuntimeDir() string {
-	if dir := os.Getenv("REMNANODE_RUNTIME_DIR"); dir != "" {
+	if dir := os.Getenv("GOWAVE_NODE_RUNTIME_DIR"); dir != "" {
 		return dir
 	}
-	return "/run/remnanode"
+	return "/run/gowave-node"
 }
 
 // PrivateDir refuses symlinks and directories belonging to another user.

@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"errors"
-	"github.com/remnawave/node-go/internal/config"
-	"github.com/remnawave/node-go/internal/logger"
-	"github.com/remnawave/node-go/internal/updater"
+	"github.com/aaaSaZaN/gowave-node/internal/config"
+	"github.com/aaaSaZaN/gowave-node/internal/logger"
+	"github.com/aaaSaZaN/gowave-node/internal/updater"
 	"syscall"
 )
 
@@ -64,7 +64,7 @@ func FindCorePath(s6Available bool) string {
 		}
 	}
 
-	// 1. Check adjacent to remnanode binary (e.g. /opt/remnanode/rw-core or /opt/remnanode/xray)
+	// 1. Check adjacent to gowave-node binary (e.g. /opt/gowave-node/rw-core or /opt/gowave-node/xray)
 	if exe, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exe)
 		for _, name := range []string{"rw-core", "xray"} {
@@ -153,7 +153,7 @@ func assetDirectory(core string) string {
 	if dir := os.Getenv("XRAY_LOCATION_ASSET"); dir != "" {
 		return dir
 	}
-	for _, dir := range []string{filepath.Dir(core), "/usr/local/share/xray", "/opt/remnanode", "/usr/share/xray"} {
+	for _, dir := range []string{filepath.Dir(core), "/usr/local/share/xray", "/opt/gowave-node", "/usr/share/xray"} {
 		if _, err := os.Stat(filepath.Join(dir, "geoip.dat")); err == nil {
 			return dir
 		}

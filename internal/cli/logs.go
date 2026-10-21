@@ -100,7 +100,7 @@ func RunLogsCLI(logType string, args []string) {
 			}
 		}
 
-		fmt.Fprintf(os.Stderr, "%s[ERROR]%s Remnanode daemon is not running or unix socket not found.\n", colorRed, colorReset)
+		fmt.Fprintf(os.Stderr, "%s[ERROR]%s gowave-node daemon is not running or unix socket not found.\n", colorRed, colorReset)
 		fmt.Fprintf(os.Stderr, "Checked sockets: %v\n", socketPaths)
 		os.Exit(1)
 	}

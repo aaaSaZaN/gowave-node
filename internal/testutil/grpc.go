@@ -3,7 +3,7 @@ package testutil
 
 import (
 	"context"
-	stats "github.com/remnawave/node-go/internal/xrayapi"
+	stats "github.com/aaaSaZaN/gowave-node/internal/xrayapi"
 	handler "github.com/xtls/xray-core/app/proxyman/command"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

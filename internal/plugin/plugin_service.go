@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/remnawave/node-go/internal/apiutil"
+	"github.com/aaaSaZaN/gowave-node/internal/apiutil"
 	"log"
 	"net/http"
 	"net/netip"
