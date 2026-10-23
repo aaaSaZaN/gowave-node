@@ -25,8 +25,17 @@ A fresh install asks for the `SECRET_KEY` from the node settings in the panel.
 returns once the management daemon responds (up to 30 seconds), so the panel
 can be configured afterwards. Updates and migrations wait up to two minutes
 for Xray readiness and restore the previous service on failure. The script is
-POSIX sh and supports systemd, OpenRC, and OpenWrt
-procd on amd64, 386, arm64, ARMv7/v6/v5, RISC-V, and MIPS.
+POSIX sh and supports systemd, OpenRC, OpenWrt procd, and Entware init.d
+(Keenetic and other opkg systems) on amd64, 386, arm64, ARMv7/v6/v5, RISC-V,
+and MIPS.
+
+On Entware the installer writes `/opt/etc/init.d/S99gowave-node`, which
+`rc.unslung` starts at boot and which restarts the node 3 seconds after it
+exits. Files stay under `/opt` (commands in `/opt/bin`) and runtime state lives
+in `/tmp/gowave-node`. Node output does not go to the system log; read it with
+`gowave-node logs`. Panel-triggered updates need systemd, so update with
+`gowave-node update`. Open `NODE_PORT` and the Xray inbound ports in the
+router firewall for the WAN interface.
 
 The installer automatically migrates previous native installations to the
 `gowave-node` service. It retains their installation directory so certificate

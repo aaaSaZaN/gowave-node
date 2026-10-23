@@ -9,6 +9,7 @@ import pty
 import subprocess
 import tempfile
 import termios
+import time
 import unittest
 import zipfile
 
@@ -27,6 +28,11 @@ status)
         --wait-ready) [ "${MOCK_READY:-1}" = 1 ] ;;
         *) exit 1 ;;
     esac ;;
+'')
+    printf 'node daemon %s %s %s\\n' "$PWD" "$GOWAVE_NODE_RUNTIME_DIR" "$ASN_INDEX_PATH" >> "$MOCK_ROOT/events"
+    # The first daemon run crashes so service supervision can be observed.
+    [ "$(grep -c '^node daemon' "$MOCK_ROOT/events")" -gt 1 ] || exit 1
+    exec sleep 60 ;;
 esac
 '''
 MOCK = '''#!/usr/bin/env python3
@@ -118,7 +124,7 @@ class ScriptTests(unittest.TestCase):
     def run_installer(self, root, runs=1, arch='amd64', manifest='checksums.txt', asn=True, corrupt=False, terminal=False, **environment):
         (root/'assets').mkdir()
         (root/'bin').mkdir()
-        for name in ['id','uname','docker','curl','systemctl','rc-service','rc-update','ss','chown','getent','groupadd','useradd','cp','ujail','legacy-procd']:
+        for name in ['id','uname','docker','curl','systemctl','rc-service','rc-update','ss','chown','getent','groupadd','useradd','cp','ujail','legacy-procd','logger']:
             script=root/'bin'/name
             script.write_text(MOCK)
             script.chmod(0o755)
@@ -479,6 +485,39 @@ esac
             self.assertNotIn('ujail',script)
             self.assertIn('procd restart',events)
             self.assertNotIn('systemctl daemon-reload',events)
+
+    def test_entware_service_supervises_node(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            script=root/'init.d/S99gowave-node'
+            control=lambda action:subprocess.run([str(script),action],capture_output=True,text=True,timeout=40)
+            try:
+                result,events=self.run_installer(root,GOWAVE_NODE_INIT='entware',MOCK_DOCKER='0',SECRET_KEY='abc')
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                text=script.read_text()
+                self.assertTrue(text.startswith('#!/bin/sh\n'))
+                self.assertEqual(script.stat().st_mode&0o777,0o755)
+                self.assertIn('directory="'+str(root/'install')+'"',text)
+                self.assertIn('GOWAVE_NODE_RUNTIME_DIR='+str(root/'run')+'\n',(root/'install/.env').read_text())
+                self.assertNotIn('systemctl',events)
+                for _ in range(100):
+                    events=(root/'events').read_text()
+                    if events.count('node daemon ')==2:break
+                    time.sleep(0.1)
+                self.assertEqual(events.count('node daemon '),2,events)
+                self.assertIn('node daemon '+str(root/'install')+' '+str(root/'run')+' '+str(root/'prefix/share/asn/asn-prefixes.zip')+'\n',events)
+                self.assertIn('logger -t gowave-node exited with status 1; restarting in 3 seconds',events)
+                self.assertEqual(control('check').returncode,0)
+                self.assertIn('already running',control('start').stdout)
+                supervisor=int((root/'run.pid').read_text())
+                stopped=control('stop')
+                self.assertEqual(stopped.returncode,0,stopped.stdout+stopped.stderr)
+                self.assertFalse((root/'run.pid').exists())
+                self.assertFalse(pathlib.Path('/proc',str(supervisor)).exists())
+                self.assertEqual(control('check').returncode,1)
+                self.assertEqual((root/'events').read_text().count('node daemon '),2)
+            finally:
+                if script.exists():control('stop')
 
     def test_failed_native_update_preserves_environment_metadata(self):
         with tempfile.TemporaryDirectory() as directory:

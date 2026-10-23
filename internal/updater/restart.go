@@ -10,18 +10,32 @@ import (
 	"time"
 )
 
+// initScripts are the OpenRC/OpenWrt procd and Entware services that
+// install.sh writes.
+var initScripts = []string{"/etc/init.d/gowave-node", "/opt/etc/init.d/S99gowave-node"}
+
+// InitScript returns the installed init.d service script, or "" without one.
+func InitScript() string {
+	for _, path := range initScripts {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return ""
+}
+
 // RestartNodeProcess restarts the node through its service manager.
 func RestartNodeProcess() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Entware's script waits up to 30 seconds for the node to stop.
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	var cmd *exec.Cmd
 	if _, err := os.Stat("/run/service/node/supervise/control"); err == nil {
 		cmd = exec.CommandContext(ctx, "/command/s6-svc", "-t", "/run/service/node")
 	} else if _, err := os.Stat("/run/systemd/system"); err == nil {
 		cmd = exec.CommandContext(ctx, "systemctl", "restart", "gowave-node")
-	} else if _, err := os.Stat("/etc/init.d/gowave-node"); err == nil {
-		// OpenRC and OpenWrt procd services installed by install.sh.
-		cmd = exec.CommandContext(ctx, "/etc/init.d/gowave-node", "restart")
+	} else if script := InitScript(); script != "" {
+		cmd = exec.CommandContext(ctx, script, "restart")
 	} else if _, err := exec.LookPath("systemctl"); err == nil {
 		cmd = exec.CommandContext(ctx, "systemctl", "restart", "gowave-node")
 	} else {

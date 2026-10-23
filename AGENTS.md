@@ -152,7 +152,10 @@ candidate. `.smoke/`, `dist/`, and root build outputs are ignored artifacts.
   capabilities are error cases. Smoke containers drop all capabilities and do
   not certify real firewall enforcement.
 - `install.sh` is the single root installer/updater/migrator for systemd, OpenRC,
-  and OpenWrt procd. It is POSIX sh and must keep working under BusyBox ash and
+  OpenWrt procd, and Entware init.d (Keenetic). Entware has no supervisor, so
+  the generated `S99gowave-node` script runs its own respawn loop, keeps files
+  under `/opt`, and writes the `/tmp/gowave-node` runtime to `.env` for the CLI.
+  It is POSIX sh and must keep working under BusyBox ash and
   dash with only curl/wget and a SHA-256 tool. It can stop Docker and change
   host services. Its tests mock host commands and redirect install paths into
   temporary directories; use `python3 tests/test_scripts.py` for installer changes.

@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/aaaSaZaN/gowave-node/internal/updater"
 )
 
 func RunStatusCLI(version string) {
@@ -91,8 +93,8 @@ func RunRestartCLI() {
 		}
 	}
 
-	if _, err := os.Stat("/etc/init.d/gowave-node"); err == nil {
-		cmd := exec.Command("/etc/init.d/gowave-node", "restart")
+	if script := updater.InitScript(); script != "" {
+		cmd := exec.Command(script, "restart")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err == nil {

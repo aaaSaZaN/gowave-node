@@ -8,7 +8,8 @@
 # never stopped before every preflight check passes, and any failure restores
 # the previous service. Optional settings: SECRET_KEY, NODE_PORT (used only when
 # not already configured), GOWAVE_NODE_VERSION (release tag, default latest), and
-# GOWAVE_NODE_INIT (systemd, openrc, or procd; detected by default).
+# GOWAVE_NODE_INIT (systemd, openrc, procd, or entware for Keenetic and other
+# opkg systems; detected by default).
 set -eu
 umask 077
 
@@ -70,12 +71,14 @@ if [ -z "$init" ]; then
     if [ -d /run/systemd/system ] && have systemctl; then init=systemd
     elif have rc-service && have rc-update; then init=openrc
     elif [ -f /etc/rc.common ] && [ -x /sbin/procd ]; then init=procd
-    else fail 'No supported service manager found (systemd, OpenRC, or OpenWrt procd).'
+    elif [ -f /opt/etc/init.d/rc.unslung ]; then init=entware
+    else fail 'No supported service manager found (systemd, OpenRC, OpenWrt procd, or Entware).'
     fi
 fi
 legacy_dir=${GOWAVE_NODE_LEGACY_INSTALL_DIR:-${REMNANODE_INSTALL_DIR:-/opt/remnanode}}
 install_dir=${GOWAVE_NODE_INSTALL_DIR:-}
-prefix=${GOWAVE_NODE_PREFIX:-${REMNANODE_PREFIX:-/usr/local}}
+prefix=${GOWAVE_NODE_PREFIX:-${REMNANODE_PREFIX:-}}
+default_runtime=/run/gowave-node
 case $init in
     systemd)
         service_dir=${GOWAVE_NODE_SYSTEMD_DIR:-${REMNANODE_SYSTEMD_DIR:-/etc/systemd/system}}
@@ -98,15 +101,27 @@ case $init in
         legacy_service_file=$service_dir/remnanode
         service_mode=0755
         ;;
+    entware)
+        # rc.unslung starts every executable S* script in /opt/etc/init.d. The
+        # firmware root is read-only and may lack /run, so Entware keeps files
+        # in /opt and runtime state in the /tmp tmpfs.
+        service_dir=${GOWAVE_NODE_INITD_DIR:-${REMNANODE_INITD_DIR:-/opt/etc/init.d}}
+        service_file=$service_dir/S99gowave-node
+        legacy_service_file=$service_dir/S99remnanode
+        service_mode=0755
+        [ -n "$prefix" ] || prefix=/opt
+        default_runtime=/tmp/gowave-node
+        ;;
     *) fail "Unsupported GOWAVE_NODE_INIT value: $init" ;;
 esac
+[ -n "$prefix" ] || prefix=/usr/local
 if [ -z "$install_dir" ]; then
     if [ -x /opt/gowave-node/gowave-node ]; then install_dir=/opt/gowave-node
     elif [ -x "$legacy_dir/remnanode" ] || [ -x "$legacy_dir/gowave-node" ]; then install_dir=$legacy_dir
     else install_dir=/opt/gowave-node
     fi
 fi
-runtime_dir=$(printf '%s' "${GOWAVE_NODE_RUNTIME_DIR:-${REMNANODE_RUNTIME_DIR:-/run/gowave-node}}" | sed 's#//*#/#g; s#/$##')
+runtime_dir=$(printf '%s' "${GOWAVE_NODE_RUNTIME_DIR:-${REMNANODE_RUNTIME_DIR:-$default_runtime}}" | sed 's#//*#/#g; s#/$##')
 validate_runtime() {
     case "$1" in
         /*) ;;
@@ -141,6 +156,12 @@ service_action() {
         procd:enabled) [ -x "$action_file" ] && "$action_file" enabled ;;
         procd:active) [ -x "$action_file" ] && "$action_file" running >/dev/null 2>&1 ;;
         procd:*) "$action_file" "$action" ;;
+        # The script's executable bit is its boot enablement, and the installer
+        # writes or restores the script itself.
+        entware:reload|entware:enable|entware:disable) : ;;
+        entware:enabled) [ -x "$action_file" ] ;;
+        entware:active) [ -x "$action_file" ] && "$action_file" check >/dev/null 2>&1 ;;
+        entware:*) "$action_file" "$action" ;;
     esac
 }
 svc() { service_action gowave-node "$1" "$service_file"; }
@@ -306,7 +327,8 @@ if [ -z "${GOWAVE_NODE_RUNTIME_DIR:-${REMNANODE_RUNTIME_DIR:-}}" ]; then
     if [ -n "$saved_runtime" ]; then runtime_dir=$(unquote "$saved_runtime" GOWAVE_NODE_RUNTIME_DIR); fi
 fi
 validate_runtime "$runtime_dir"
-if [ "$legacy_migration" = true ]; then env_set GOWAVE_NODE_RUNTIME_DIR "$runtime_dir"; fi
+# The CLI defaults to /run/gowave-node; Entware's runtime is found through .env.
+if [ "$legacy_migration" = true ] || [ "$init" = entware ]; then env_set GOWAVE_NODE_RUNTIME_DIR "$runtime_dir"; fi
 # The same runtime must be used by the service and the CLI checks.
 export GOWAVE_NODE_RUNTIME_DIR="$runtime_dir"
 secret=$(env_get SECRET_KEY)
@@ -387,6 +409,84 @@ depend() {
 	after firewall
 }
 RC
+elif [ "$init" = entware ]; then
+    cat > "$work/service" <<ENTWARE
+#!/bin/sh
+# gowave-node for Entware, started by /opt/etc/init.d/rc.unslung. Entware has
+# no supervisor, so a shell loop restarts the node like the other managers.
+directory="$install_dir"
+pidfile="$runtime_dir.pid"
+export GOWAVE_NODE_RUNTIME_DIR="$runtime_dir"
+export ASN_INDEX_PATH="$prefix/share/asn/asn-prefixes.zip"
+ENTWARE
+    cat >> "$work/service" <<'ENTWARE'
+export PATH="/opt/sbin:/opt/bin:$PATH"
+node=$directory/gowave-node
+umask 077
+
+# A pidfile can outlive its process when the runtime is on persistent storage.
+running() {
+	pid=$(cat "$pidfile" 2>/dev/null) && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null &&
+		grep -q gowave-node "/proc/$pid/cmdline" 2>/dev/null
+}
+
+supervise() {
+	child=
+	stopping=
+	trap 'stopping=1; [ -z "$child" ] || kill -TERM "$child" 2>/dev/null' TERM
+	trap '' HUP INT
+	ulimit -n 1048576 2>/dev/null || :
+	cd "$directory" || exit 1
+	while [ -z "$stopping" ]; do
+		"$node" & child=$!
+		# TERM may arrive before the node's PID is recorded.
+		[ -z "$stopping" ] || kill -TERM "$child" 2>/dev/null
+		wait "$child"
+		status=$?
+		# A trapped TERM interrupts wait while the node is still shutting down.
+		if [ -n "$stopping" ]; then wait "$child"; break; fi
+		child=
+		if command -v logger >/dev/null 2>&1; then
+			logger -t gowave-node "exited with status $status; restarting in 3 seconds"
+		fi
+		sleep 3
+	done
+}
+
+start() {
+	if running; then echo 'gowave-node is already running.'; return 0; fi
+	mkdir -p "${pidfile%/*}"
+	supervise </dev/null >/dev/null 2>&1 &
+	echo "$!" > "$pidfile"
+	echo 'gowave-node started.'
+}
+
+stop() {
+	if ! running; then rm -f "$pidfile"; echo 'gowave-node is not running.'; return 0; fi
+	kill -TERM "$pid"
+	waited=0
+	while kill -0 "$pid" 2>/dev/null; do
+		if [ "$waited" -ge 30 ]; then
+			kill -KILL "$pid" 2>/dev/null
+			echo 'gowave-node did not stop within 30 seconds.' >&2
+			return 1
+		fi
+		sleep 1
+		waited=$((waited + 1))
+	done
+	rm -f "$pidfile"
+	echo 'gowave-node stopped.'
+}
+
+case $1 in
+	start) start ;;
+	stop) stop ;;
+	restart) stop && start ;;
+	check|status)
+		if running; then echo 'gowave-node is running.'; else echo 'gowave-node is not running.'; exit 1; fi ;;
+	*) echo "Usage: $0 {start|stop|restart|check}" >&2; exit 1 ;;
+esac
+ENTWARE
 else
     cat > "$work/service" <<PROCD
 #!/bin/sh /etc/rc.common
