@@ -40,7 +40,14 @@ func ScheduleRestart(target string, core bool) error {
 	if err := config.PrivateDir(config.RuntimeDir()); err != nil {
 		return err
 	}
-	monitor, err := os.CreateTemp(config.RuntimeDir(), ".update-monitor-*")
+	// The runtime directory lives under /run, which distributions such as
+	// Ubuntu mount noexec; systemd-run then cannot start the monitor. The
+	// node's own directory is executable by definition.
+	dir := filepath.Dir(target)
+	if exe, err := os.Executable(); err == nil {
+		dir = filepath.Dir(exe)
+	}
+	monitor, err := os.CreateTemp(dir, ".update-monitor-*")
 	if err != nil {
 		return err
 	}

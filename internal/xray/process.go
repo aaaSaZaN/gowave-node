@@ -252,7 +252,11 @@ func (p *ProcessManager) Start(cfg map[string]interface{}) error {
 	cmd := exec.Command(p.execPath, "run", "-config", p.configPath)
 	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+p.assetDir, "xray.location.asset="+p.assetDir)
 	if p.ringBuffer != nil {
-		cmd.Stdout = io.MultiWriter(os.Stdout, p.ringBuffer)
+		// Xray writes its access and error logs to stdout; forwarding them
+		// to the service log grows journald/syslog without bound on busy
+		// nodes. Keep them in the bounded buffer that `xlogs` reads and
+		// only pass stderr (panics, runtime failures) through.
+		cmd.Stdout = p.ringBuffer
 		cmd.Stderr = io.MultiWriter(os.Stderr, p.ringBuffer)
 	} else {
 		cmd.Stdout = os.Stdout
