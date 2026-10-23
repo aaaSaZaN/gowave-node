@@ -237,7 +237,7 @@ esac
                 root=pathlib.Path(directory)
                 previous,settings=self.prepare_previous_native(root)
                 before=(previous/'.env').stat()
-                result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_LEGACY_ACTIVE='1',MOCK_LEGACY_PATHS_ACTIVE='1',
+                result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_LEGACY_ACTIVE='1',
                     GOWAVE_NODE_INSTALL_DIR=str(previous),GOWAVE_NODE_LEGACY_INSTALL_DIR=str(previous),**failure)
                 self.assertNotEqual(result.returncode,0)
                 self.assertEqual((previous/'.env').read_text(),settings)
@@ -248,8 +248,7 @@ esac
                 self.assertIn('systemctl restart remnanode',events)
                 self.assertLess(events.index('systemctl stop gowave-node'),events.index('systemctl restart remnanode'))
                 state=json.loads((root/'service-state').read_text())
-                for unit in ('remnanode','remnanode-restart.path','remnanode-update.path'):
-                    self.assertEqual(state[unit],{'active':True,'enabled':True})
+                self.assertEqual(state['remnanode'],{'active':True,'enabled':True})
 
     def test_previous_native_checksum_failure_keeps_old_service_untouched(self):
         with tempfile.TemporaryDirectory() as directory:

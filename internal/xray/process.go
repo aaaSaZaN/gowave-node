@@ -196,7 +196,8 @@ func (p *ProcessManager) ValidateConfig(ctx context.Context, cfg map[string]inte
 	if err != nil {
 		return err
 	}
-	stage := configPath + ".validate"
+	// Xray v26.10+ picks the loader from the extension and rejects unknown ones.
+	stage := strings.TrimSuffix(configPath, filepath.Ext(configPath)) + ".validate.json"
 	if err = config.WritePrivate(stage, data); err != nil {
 		return err
 	}
