@@ -29,8 +29,8 @@ POSIX sh and supports systemd, OpenRC, and OpenWrt
 procd on amd64, 386, arm64, ARMv7/v6/v5, RISC-V, and MIPS.
 
 The installer automatically migrates previous native installations to the
-`gowave-node` service. It retains their installation directory and unprivileged
-account so certificate paths, custom cores, and permissions keep working. It
+`gowave-node` service. It retains their installation directory so certificate
+paths and custom cores keep working. It
 preserves the secret and port, translates saved environment options, and creates
 aliases for the previous CLI names. The previous service and its update watchers
 are disabled only after the release is verified and provisioned; a failed switch
@@ -109,13 +109,15 @@ process environment values take precedence.
 | `NFTABLES_ACCEPT_REPLY_TRAFFIC` | `false` | Exempt connection reply traffic from ingress blocks |
 | `DISABLE_HASHED_SET_CHECK` | `false` | Force configuration synchronization to restart the core |
 
-Use a `0700` runtime directory owned by the service user. Configuration and CLI
-discovery files use `0600`. Existing explicit abstract Unix names remain
-supported. Explicit TCP management endpoints must use a loopback IP. Runtime
-configuration is never copied to `/etc/xray/config.json`. Daemon startup refuses
-UID 0. Configure s6 supervisors to run the node and Xray under the same
-unprivileged account, with ownership of their runtime/configuration directories;
-service capabilities must be provided by the container or supervisor.
+The runtime directory uses `0700`; configuration and CLI discovery files use
+`0600`. Existing explicit abstract Unix names remain supported. Explicit TCP
+management endpoints must use a loopback IP. Runtime configuration is never
+copied to `/etc/xray/config.json`.
+
+The installed service runs as root, like the Docker node: Xray must be able to
+use whatever the panel configuration references, such as Unix sockets shared
+with nginx under `/dev/shm`, certificates of other services, and low ports.
+Administrators who want isolation can add their own systemd override.
 
 For a manual native systemd service:
 
@@ -127,8 +129,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=gowave-node
-Group=gowave-node
+User=root
 WorkingDirectory=/opt/gowave-node
 ExecStart=/opt/gowave-node/gowave-node
 RuntimeDirectory=gowave-node
@@ -142,27 +143,10 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 ```
 
-After creating the base unit, install the service account, hardening drop-in,
-and update/restart path units, then restart:
-
 ```sh
-sudo /opt/gowave-node/gowave-node service install /opt/gowave-node
 sudo systemctl enable gowave-node
 sudo systemctl restart gowave-node
 ```
-
-`install.sh` applies this policy on every run. Existing root systemd services also
-migrate on the first startup of an upgraded binary, before opening any network
-listeners. A dedicated `gowave-node` account keeps stable ownership of private
-runtime files, the core, geodata, and update backups; `DynamicUser` is disabled.
-The drop-in enables `ProtectSystem=strict`, `ProtectHome`, `PrivateDevices`,
-`PrivateTmp`, `NoNewPrivileges`, and `MemoryDenyWriteExecute`, and permits writes
-only to the installation and runtime directories. The node and Xray inherit only
-`CAP_NET_BIND_SERVICE`, `CAP_NET_ADMIN`, and `CAP_NET_RAW` for low ports, firewall
-operations/transparent proxying, and raw network probes. Managed core and geodata
-are kept under `/opt/gowave-node`. Custom certificate/key files must be readable by
-`gowave-node` outside home directories; additional write paths or device access
-require an administrator's systemd override.
 
 Firewall enforcement requires `nft`, `ss` from iproute2, and CAP_NET_ADMIN.
 Unavailable or failed enforcement is reported to the panel. Geocheck requires
@@ -183,9 +167,7 @@ gowave-node core install --version v26.7.28 -y
 gowave-node core reset
 ```
 
-CLI logs and status use the private discovery file, so run them as the service
-user (`sudo -u gowave-node /opt/gowave-node/gowave-node status`, for example).
-Use the same account for CLI updates and core installs. Add PATH symlinks
+CLI logs and status use the private discovery file, so run them as root. Add PATH symlinks
 explicitly or use those installed by `install.sh`;
 executing the binary does not overwrite system binaries or links.
 
@@ -194,13 +176,9 @@ latest stable `XTLS/Xray-core` release. Explicit version requests never fall bac
 to another version. Downloaded executables require a published SHA-256 digest
 or checksum manifest and are validated before replacement.
 
-Updates retain the preceding executable. Native HTTP updates use a separate
-unprivileged systemd service, activated by a private request file, to monitor
-restart/readiness and restore the preceding executable on failure. A separate
-path unit permits only a fixed restart of `gowave-node.service`; only its fixed
-`systemctl` invocation uses the manager's UID, with an empty capability set.
-The node has no permission to manage arbitrary system units or run root code.
-CLI updates wait synchronously for restart. HTTP updates
+Updates retain the preceding executable. Native HTTP updates start a transient
+`systemd-run` unit that monitors restart/readiness and restores the preceding
+executable on failure. CLI updates wait synchronously for restart. HTTP updates
 on an s6-only host require an external restart supervisor; without one, the
 endpoint rejects the update and restores the executable. Existing s6 Xray
 start/stop/configuration functionality is independent of that restriction. The

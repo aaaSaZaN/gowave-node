@@ -105,7 +105,6 @@ elif name=='docker':
 class ScriptTests(unittest.TestCase):
     def test_shell_syntax(self):
         subprocess.run(['sh', '-n', str(INSTALLER)], check=True)
-        subprocess.run(['sh', '-n', str(ROOT/'internal/serviceunit/install.sh')], check=True)
         for path in sorted((ROOT/'scripts').glob('*.sh')):
             subprocess.run(['bash', '-n', str(path)], check=True)
 
@@ -149,7 +148,6 @@ esac
             checksums=checksums.replace(hashlib.sha256(NODE).hexdigest(),'0'*64)
         (assets/manifest).write_text(checksums)
         env=dict(os.environ,PATH=str(root/'bin')+':'+os.environ['PATH'],MOCK_ROOT=str(root),GOWAVE_NODE_INIT='systemd',
-                 GOWAVE_NODE_SERVICE_INSTALLER=str(ROOT/'internal/serviceunit/install.sh'),
                  GOWAVE_NODE_INSTALL_DIR=str(root/'install'),GOWAVE_NODE_PREFIX=str(root/'prefix'),
                  GOWAVE_NODE_SYSTEMD_DIR=str(root/'units'),GOWAVE_NODE_INITD_DIR=str(root/'init.d'),
                  GOWAVE_NODE_CONFIG_DIR=str(root/'config'),GOWAVE_NODE_RUNTIME_DIR=str(root/'run'))
@@ -221,16 +219,12 @@ esac
             self.assertIn('SECRET_KEY=previous-secret',settings)
             self.assertIn('NODE_PORT=2222',settings)
             self.assertIn('GOWAVE_NODE_RUNTIME_DIR='+str(root/'custom-run'),settings)
-            self.assertIn('GOWAVE_NODE_SERVICE_USER=remnanode',settings)
+            self.assertNotIn('GOWAVE_NODE_SERVICE_USER',settings)
             self.assertNotIn('REMNANODE_',settings)
-            policy=(root/'units/gowave-node.service.d/90-unprivileged.conf').read_text()
-            self.assertIn('User=remnanode\n',policy)
-            self.assertIn('Environment=GOWAVE_NODE_RUNTIME_DIR='+str(root/'custom-run'),policy)
-            self.assertIn('PathExists='+str(root/'custom-run/restart-request'),(root/'units/gowave-node-restart.path').read_text())
+            self.assertFalse((root/'units/gowave-node.service.d/90-unprivileged.conf').exists())
             self.assertEqual(events.count('systemctl stop remnanode\n'),1)
             self.assertLess(events.index('/gowave-node-linux-amd64'),events.index('systemctl stop remnanode'))
             self.assertLess(events.index('systemctl stop remnanode'),events.index('systemctl restart gowave-node'))
-            self.assertIn('chown -hR remnanode:remnanode '+str(previous),events)
             for name in ('remnanode','remnanode-go','gowave-node'):
                 self.assertEqual(os.readlink(root/'prefix/bin'/name),str(previous/'gowave-node'))
             state=json.loads((root/'service-state').read_text())
@@ -325,17 +319,6 @@ esac
             self.assertNotIn('systemctl restart remnanode',events)
             self.assertEqual(json.loads((root/'service-state').read_text())['remnanode'],{'active':False,'enabled':True})
 
-    def test_previous_native_waits_for_existing_update(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root=pathlib.Path(directory)
-            previous,settings=self.prepare_previous_native(root)
-            result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_LEGACY_ACTIVE='1',MOCK_LEGACY_UPDATE_ACTIVE='1',
-                GOWAVE_NODE_INSTALL_DIR=str(previous),GOWAVE_NODE_LEGACY_INSTALL_DIR=str(previous))
-            self.assertNotEqual(result.returncode,0)
-            self.assertIn('update monitor is running',result.stdout+result.stderr)
-            self.assertEqual((previous/'.env').read_text(),settings)
-            self.assertNotIn('curl ',events)
-
     def test_previous_native_imports_external_env_and_prefers_new_options(self):
         with tempfile.TemporaryDirectory() as directory:
             root=pathlib.Path(directory)
@@ -382,13 +365,10 @@ esac
             self.assertNotIn('PATH=',settings)
             self.assertEqual((root/'install/.env').stat().st_mode&0o777,0o600)
             self.assertIn('ExecStart='+str(root/'install/gowave-node'),(root/'units/gowave-node.service').read_text())
-            policy=(root/'units/gowave-node.service.d/90-unprivileged.conf').read_text()
-            for directive in ['User=gowave-node','ProtectSystem=strict','ProtectHome=true','PrivateDevices=true','PrivateTmp=true','NoNewPrivileges=true','MemoryDenyWriteExecute=true','CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW']:
-                self.assertIn(directive,policy)
-            self.assertNotIn('User=root',(root/'units/gowave-node.service').read_text())
-            self.assertIn('User=gowave-node',(root/'units/gowave-node-update.service').read_text())
-            self.assertIn('enable --now gowave-node-restart.path gowave-node-update.path',events)
-            self.assertIn('chown -hR gowave-node:gowave-node',events)
+            # The node runs as root without a sandbox: Xray must reach sockets and
+            # files of other services (for example /dev/shm for nginx).
+            self.assertIn('User=root',(root/'units/gowave-node.service').read_text())
+            self.assertFalse((root/'units/gowave-node.service.d').exists())
             self.assertIn('docker stop -t 10 old-node',events)
             self.assertEqual(os.readlink(root/'prefix/bin/gowave-node'),str(root/'install/gowave-node'))
             self.assertTrue((root/'prefix/share/asn/asn-prefixes.zip').exists())
@@ -482,11 +462,8 @@ esac
             self.assertTrue(script.startswith('#!/sbin/openrc-run\n'))
             self.assertIn('command="'+str(root/'install/gowave-node')+'"',script)
             self.assertEqual((root/'init.d/gowave-node').stat().st_mode&0o777,0o755)
-            self.assertIn('command_user="gowave-node:gowave-node"',script)
-            self.assertIn('capabilities="^cap_net_bind_service,^cap_net_admin,^cap_net_raw"',script)
-            self.assertIn('no_new_privs=true',script)
-            self.assertIn('checkpath -d -m 0700 -o gowave-node:gowave-node',script)
-            self.assertIn('chown -hR gowave-node:gowave-node',events)
+            for unprivileged in ('command_user=','capabilities=','no_new_privs'):
+                self.assertNotIn(unprivileged,script)
             self.assertNotIn('systemctl daemon-reload',events)
             self.assertFalse((root/'units/gowave-node.service.d').exists())
             self.assertIn('rc-update add gowave-node default',events)
@@ -499,28 +476,10 @@ esac
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             script=(root/'procd-template').read_text()
             self.assertTrue(script.startswith('#!/bin/sh /etc/rc.common\n'))
-            self.assertIn('-U gowave-node -G gowave-node',script)
-            self.assertIn('-c -- "'+str(root/'install/gowave-node')+'"',script)
-            self.assertIn('chown gowave-node:gowave-node "'+str(root/'run')+'"',script)
-            expected=['CAP_NET_BIND_SERVICE','CAP_NET_ADMIN','CAP_NET_RAW']
-            policy=json.loads((root/'config/capabilities.json').read_text())
-            self.assertEqual(set(policy),{'bounding','effective','inheritable','permitted','ambient'})
-            for capabilities in policy.values():self.assertEqual(capabilities,expected)
-            self.assertIn('chown -hR gowave-node:gowave-node',events)
-            self.assertIn('chown root:root '+str(root/'config'),events)
+            self.assertIn('procd_set_param command "'+str(root/'install/gowave-node')+'"',script)
+            self.assertNotIn('ujail',script)
             self.assertIn('procd restart',events)
-            self.assertIn('procd_param command '+str(root/'bin/ujail'),events)
             self.assertNotIn('systemctl daemon-reload',events)
-            self.assertEqual((root/'run').stat().st_mode&0o777,0o700)
-
-    def test_procd_rejects_node_writable_capability_policy(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root=pathlib.Path(directory)
-            result,events=self.run_installer(root,GOWAVE_NODE_INIT='procd',GOWAVE_NODE_CONFIG_DIR=str(root/'install/policy'))
-            self.assertNotEqual(result.returncode,0)
-            self.assertIn('Capability policy must be outside',result.stderr)
-            self.assertNotIn('docker stop',events)
-            self.assertFalse((root/'install/policy/capabilities.json').exists())
 
     def test_failed_native_update_preserves_environment_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -533,10 +492,8 @@ esac
             old_node=NODE+b'# previous native node\n'
             (install/'gowave-node').write_bytes(old_node);(install/'gowave-node').chmod(0o755)
             units=root/'units';units.mkdir()
-            unit='[Service]\nUser=gowave-node\n'
+            unit='[Service]\nUser=root\n'
             (units/'gowave-node.service').write_text(unit)
-            policy_dir=units/'gowave-node.service.d';policy_dir.mkdir()
-            policy=policy_dir/'90-unprivileged.conf';policy.write_text('[Service]\nUser=gowave-node\n# previous policy\n')
             result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_NATIVE_ACTIVE='1',MOCK_READY='0')
             self.assertNotEqual(result.returncode,0)
             self.assertEqual(old_env.read_text(),'SECRET_KEY=previous-secret\nNODE_PORT=2222\n')
@@ -544,7 +501,6 @@ esac
             self.assertEqual((after.st_uid,after.st_gid,after.st_mode&0o777),(before.st_uid,before.st_gid,before.st_mode&0o777))
             self.assertEqual((install/'gowave-node').read_bytes(),old_node)
             self.assertEqual((units/'gowave-node.service').read_text(),unit)
-            self.assertEqual(policy.read_text(),'[Service]\nUser=gowave-node\n# previous policy\n')
             self.assertIn('cp -p '+str(old_env),events)
             self.assertEqual(events.count('systemctl restart gowave-node\n'),2)
 
@@ -557,7 +513,6 @@ esac
             self.assertIn('NODE_PORT 2222 is already in use',result.stdout+result.stderr)
             self.assertFalse((root/'install/gowave-node').exists())
             self.assertFalse((root/'units/gowave-node.service').exists())
-        self.assertFalse((root/'units/gowave-node.service.d/90-unprivileged.conf').exists())
 
     def test_fresh_install_rolls_back_when_daemon_does_not_start(self):
         with tempfile.TemporaryDirectory() as directory:

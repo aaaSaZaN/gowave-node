@@ -2,13 +2,10 @@ package cli
 
 import (
 	"fmt"
-	"github.com/aaaSaZaN/gowave-node/internal/config"
-	"github.com/aaaSaZaN/gowave-node/internal/updater"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 func RunStatusCLI(version string) {
@@ -74,19 +71,6 @@ func RunStatusCLI(version string) {
 func RunRestartCLI() {
 	fmt.Printf("%s[RESTART]%s Restarting gowave-node service...\n", colorCyan, colorReset)
 
-	if os.Geteuid() != 0 && updater.IsManagedService() {
-		old, _ := config.ReadDiscovery()
-		err := updater.RestartNodeProcess()
-		if err == nil {
-			err = WaitReady(false, 30*time.Second, old.PID)
-		}
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		fmt.Println("gowave-node restarted successfully.")
-		return
-	}
 	if _, err := exec.LookPath("systemctl"); err == nil {
 		cmd := exec.Command("systemctl", "restart", "gowave-node")
 		cmd.Stdout = os.Stdout
