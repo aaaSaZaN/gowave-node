@@ -456,7 +456,9 @@ supervise() {
 start() {
 	if running; then echo 'gowave-node is already running.'; return 0; fi
 	mkdir -p "${pidfile%/*}"
-	supervise </dev/null >/dev/null 2>&1 &
+	# A fresh shell closes Dash's saved redirection descriptors, so callers
+	# capturing this script's output do not wait for the supervisor to exit.
+	"$0" supervise </dev/null >/dev/null 2>&1 &
 	echo "$!" > "$pidfile"
 	echo 'gowave-node started.'
 }
@@ -479,6 +481,7 @@ stop() {
 }
 
 case $1 in
+	supervise) supervise ;;
 	start) start ;;
 	stop) stop ;;
 	restart) stop && start ;;
