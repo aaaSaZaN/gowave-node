@@ -7,6 +7,7 @@ import (
 	stats "github.com/aaaSaZaN/gowave-node/internal/xrayapi"
 	hysteria "github.com/aaaSaZaN/gowave-node/internal/xrayapi/hysteria"
 	proxymancommand "github.com/xtls/xray-core/app/proxyman/command"
+	"github.com/xtls/xray-core/proxy/shadowsocks_2022"
 	"google.golang.org/protobuf/proto"
 	"os"
 	"path/filepath"
@@ -119,7 +120,7 @@ func BenchmarkUserStats(b *testing.B) {
 }
 
 func TestAllAccountWireTypes(t *testing.T) {
-	expected := map[string]string{"vless": "xray.proxy.vless.Account", "trojan": "xray.proxy.trojan.Account", "shadowsocks": "xray.proxy.shadowsocks.Account", "shadowsocks22": "xray.proxy.shadowsocks_2022.User", "hysteria": "xray.proxy.hysteria.account.Account"}
+	expected := map[string]string{"vless": "xray.proxy.vless.Account", "trojan": "xray.proxy.trojan.Account", "shadowsocks": "xray.proxy.shadowsocks.Account", "shadowsocks22": "xray.proxy.shadowsocks_2022.Account", "hysteria": "xray.proxy.hysteria.account.Account"}
 	calls := 0
 	path := testutil.XrayServer(t, map[string]testutil.RPC{"HandlerService/AlterInbound": func(_ context.Context, m proto.Message) (proto.Message, error) {
 		request := m.(*proxymancommand.AlterInboundRequest)
@@ -135,6 +136,12 @@ func TestAllAccountWireTypes(t *testing.T) {
 			var account hysteria.Account
 			if err := proto.Unmarshal(operation.User.Account.Value, &account); err != nil || len(account.Auth) != 200 {
 				t.Errorf("long Hysteria password not encoded correctly: %v", err)
+			}
+		}
+		if request.Tag == "shadowsocks22" {
+			var account shadowsocks_2022.Account
+			if err := proto.Unmarshal(operation.User.Account.Value, &account); err != nil || account.Key != strings.Repeat("x", 200) {
+				t.Errorf("Shadowsocks 2022 key not encoded correctly: %v", err)
 			}
 		}
 		calls++
