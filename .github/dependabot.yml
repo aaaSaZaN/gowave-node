@@ -1,0 +1,48 @@
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "go"
+    assignees:
+      - "Applone"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      gomod-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+    assignees:
+      - "Applone"
+    commit-message:
+      prefix: "ci(deps)"
+
+  - package-ecosystem: "docker"
+    directory: "/tests/smoke"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "containers"
+    assignees:
+      - "Applone"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      docker-dependencies:
+        patterns:
+          - "*"

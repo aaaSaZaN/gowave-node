@@ -545,12 +545,12 @@ fi
 complete=true
 for name in gowave-node xlogs; do
     destination=$prefix/bin/$name
-    if [ ! -e "$destination" ] || [ -L "$destination" ]; then ln -sfn "$install_dir/gowave-node" "$destination"; fi
+    # Replace stale regular files too: an old CLI copy may lack execute bits.
+    [ ! -d "$destination" ] || fail "CLI path is a directory: $destination"
+    ln -sfn "$install_dir/gowave-node" "$destination"
 done
-if [ "$legacy_migration" = true ] || [ -x "$install_dir/remnanode" ]; then
-    for name in remnanode remnanode-go; do
-        destination=$prefix/bin/$name
-        if [ ! -e "$destination" ] || [ -L "$destination" ]; then ln -sfn "$install_dir/gowave-node" "$destination"; fi
-    done
-fi
+# Retire old binaries and CLI aliases only after the new service passes readiness.
+for name in remnanode remnanode-go; do
+    rm -f -- "$prefix/bin/$name" "$install_dir/$name"
+done
 if [ -n "$container" ]; then log "The previous container $container is retained for manual recovery."; fi

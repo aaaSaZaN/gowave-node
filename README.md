@@ -40,8 +40,9 @@ router firewall for the WAN interface.
 The installer automatically migrates previous native installations to the
 `gowave-node` service. It retains their installation directory so certificate
 paths and custom cores keep working. It
-preserves the secret and port, translates saved environment options, and creates
-aliases for the previous CLI names. The previous service and its update watchers
+preserves the secret and port and translates saved environment options. After a
+successful switch it removes the old binaries and CLI aliases; use `gowave-node`.
+The previous service and its update watchers
 are disabled only after the release is verified and provisioned; a failed switch
 restores their prior state and the original `.env`.
 

@@ -191,8 +191,9 @@ esac
 
     def prepare_previous_native(self, root, manager='systemd'):
         directory=root/'legacy';directory.mkdir()
-        (directory/'remnanode').write_bytes(b'#!/bin/sh\nexit 0\n')
-        (directory/'remnanode').chmod(0o755)
+        for name in ('remnanode','remnanode-go'):
+            (directory/name).write_bytes(b'#!/bin/sh\nexit 0\n')
+            (directory/name).chmod(0o755)
         for filename in ('rw-core','rw-core.stock','geoip.dat','geosite.dat','private-key.pem'):
             (directory/filename).write_bytes(('previous '+filename).encode())
         (directory/'rw-core').chmod(0o755)
@@ -216,7 +217,10 @@ esac
         with tempfile.TemporaryDirectory() as directory:
             root=pathlib.Path(directory)
             previous,_=self.prepare_previous_native(root)
-            files={p.name:p.read_bytes() for p in previous.iterdir() if p.name!='.env'}
+            files={p.name:p.read_bytes() for p in previous.iterdir() if p.name not in ('.env','remnanode','remnanode-go')}
+            (root/'prefix/bin').mkdir(parents=True)
+            (root/'prefix/bin/remnanode').symlink_to(previous/'remnanode')
+            (root/'prefix/bin/remnanode-go').write_bytes(b'old CLI')
             result,events=self.run_installer(root,runs=2,MOCK_DOCKER='0',MOCK_LEGACY_ACTIVE='1',MOCK_LEGACY_PATHS_ACTIVE='1',MOCK_PORT_BUSY='1',
                 GOWAVE_NODE_INSTALL_DIR=None,GOWAVE_NODE_LEGACY_INSTALL_DIR=str(previous),GOWAVE_NODE_RUNTIME_DIR=None)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
@@ -231,8 +235,10 @@ esac
             self.assertEqual(events.count('systemctl stop remnanode\n'),1)
             self.assertLess(events.index('/gowave-node-linux-amd64'),events.index('systemctl stop remnanode'))
             self.assertLess(events.index('systemctl stop remnanode'),events.index('systemctl restart gowave-node'))
-            for name in ('remnanode','remnanode-go','gowave-node'):
-                self.assertEqual(os.readlink(root/'prefix/bin'/name),str(previous/'gowave-node'))
+            self.assertEqual(os.readlink(root/'prefix/bin/gowave-node'),str(previous/'gowave-node'))
+            for name in ('remnanode','remnanode-go'):
+                self.assertFalse((previous/name).exists())
+                self.assertFalse(os.path.lexists(root/'prefix/bin'/name))
             state=json.loads((root/'service-state').read_text())
             self.assertEqual(state['remnanode'],{'active':False,'enabled':False})
             self.assertTrue(state['gowave-node']['active'])
@@ -243,6 +249,8 @@ esac
                 root=pathlib.Path(directory)
                 previous,settings=self.prepare_previous_native(root)
                 before=(previous/'.env').stat()
+                (root/'prefix/bin').mkdir(parents=True)
+                (root/'prefix/bin/remnanode-go').write_bytes(b'old CLI')
                 result,events=self.run_installer(root,MOCK_DOCKER='0',MOCK_LEGACY_ACTIVE='1',
                     GOWAVE_NODE_INSTALL_DIR=str(previous),GOWAVE_NODE_LEGACY_INSTALL_DIR=str(previous),**failure)
                 self.assertNotEqual(result.returncode,0)
@@ -250,6 +258,9 @@ esac
                 after=(previous/'.env').stat()
                 self.assertEqual((after.st_uid,after.st_gid,after.st_mode),(before.st_uid,before.st_gid,before.st_mode))
                 self.assertFalse((previous/'gowave-node').exists())
+                for name in ('remnanode','remnanode-go'):
+                    self.assertTrue(os.access(previous/name,os.X_OK))
+                self.assertEqual((root/'prefix/bin/remnanode-go').read_bytes(),b'old CLI')
                 self.assertFalse((root/'units/gowave-node.service').exists())
                 self.assertIn('systemctl restart remnanode',events)
                 self.assertLess(events.index('systemctl stop gowave-node'),events.index('systemctl restart remnanode'))
@@ -382,6 +393,28 @@ esac
         with tempfile.TemporaryDirectory() as directory:
             root=pathlib.Path(directory)
             self.assert_rolled_back(root,*self.run_installer(root,MOCK_READY='0'))
+
+    def test_install_repairs_cli_files_and_removes_legacy_names(self):
+        for kind in ('missing','regular','symlink'):
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as directory:
+                root=pathlib.Path(directory)
+                cli_dir=root/'prefix/bin';cli_dir.mkdir(parents=True)
+                for name in ('gowave-node','xlogs','remnanode','remnanode-go'):
+                    if kind=='regular':
+                        (cli_dir/name).write_bytes(b'old CLI')
+                        (cli_dir/name).chmod(0o644)
+                    elif kind=='symlink':
+                        (cli_dir/name).symlink_to(root/'missing-binary')
+                result,events=self.run_installer(root,runs=2)
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertEqual((root/'install/gowave-node').stat().st_mode&0o777,0o755)
+                for name in ('gowave-node','xlogs'):
+                    cli=cli_dir/name
+                    self.assertEqual(os.readlink(cli),str(root/'install/gowave-node'))
+                    version=subprocess.run([str(cli),'version'],capture_output=True,text=True,check=True)
+                    self.assertEqual(version.stdout.strip(),'gowave-node vtest')
+                for name in ('remnanode','remnanode-go'):
+                    self.assertFalse(os.path.lexists(cli_dir/name))
 
     def test_migration_from_gowave_node_image(self):
         with tempfile.TemporaryDirectory() as directory:
