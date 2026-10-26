@@ -132,7 +132,7 @@ func (c *Client) AddUser(ctx context.Context, u UserConfig) error {
 			CipherType: shadowsocks.CipherType(u.CipherType),
 		}
 	case "shadowsocks22":
-		account = &shadowsocks_2022.User{
+		account = &shadowsocks_2022.Account{
 			Key: u.Password,
 		}
 	case "hysteria":
