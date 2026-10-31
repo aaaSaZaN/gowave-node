@@ -9,6 +9,13 @@ Xray runs as a separate process. The panel API preserves the v3.4.2 node protoco
 
 The runtime needs no Node.js, Python, CGO, or LMDB library.
 
+Builds disable MPTCP by default with `godebug multipathtcp=0` in `go.mod` as a
+mitigation for [CVE-2026-98432](https://groups.google.com/g/golang-announce/c/PCoQcdxoScw/m/aD-MgXEvAAAJ).
+The process environment can override this default through `GODEBUG`; do not
+enable `multipathtcp` on unpatched hosts. This build setting applies to
+`gowave-node`, not the separately built Xray executable. Updating the Linux
+kernel is still required to fix the underlying vulnerability.
+
 **Documentation: [aaasazan.github.io/gowave-docs](https://aaasazan.github.io/gowave-docs/en/install/node/install/)** · [Русский](https://aaasazan.github.io/gowave-docs/install/node/install/)
 
 ## Install, update, or migrate

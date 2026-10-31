@@ -2,6 +2,9 @@ module github.com/aaaSaZaN/gowave-node
 
 go 1.27.1
 
+// Disable MPTCP by default to mitigate CVE-2026-98432 in unpatched Linux kernels.
+godebug multipathtcp=0
+
 require (
 	github.com/andybalholm/brotli v1.2.7
 	github.com/go-chi/chi/v5 v5.5.0
