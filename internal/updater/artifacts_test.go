@@ -1,6 +1,8 @@
 package updater
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -108,6 +110,66 @@ func TestVerifiedRawDownloadIsExecutable(t *testing.T) {
 	if path, err := DownloadReleaseBinary(ReleaseInfo{}, asset, "gowave-node"); err == nil {
 		os.Remove(path)
 		t.Fatal("accepted mismatched digest")
+	}
+}
+
+func TestDirectCoreLinkSurvivesPanelStart(t *testing.T) {
+	content := []byte("#!/bin/sh\necho 'Xray 26.11.1'\n")
+	var archive bytes.Buffer
+	zw := zip.NewWriter(&archive)
+	entry, err := zw.Create("xray")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.Write(content)
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".zip") {
+			w.Write(archive.Bytes())
+			return
+		}
+		w.Write(content)
+	}))
+	defer server.Close()
+	previous := HTTPClient
+	HTTPClient = server.Client()
+	defer func() { HTTPClient = previous }()
+
+	for _, link := range []string{"/Xray-linux-64", "/Xray-linux-64.zip?sig=abc"} {
+		target := filepath.Join(t.TempDir(), "rw-core")
+		if err := os.WriteFile(target, []byte("old"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target+".stock", []byte("old"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		path, err := DownloadAndSaveBinary(server.URL+link, "rw-core")
+		if err != nil {
+			t.Fatal(link, err)
+		}
+		if err := ValidateCoreBinary(path); err != nil {
+			t.Fatal(link, err)
+		}
+		if err := InstallStockCore(path, target); err != nil {
+			t.Fatal(link, err)
+		}
+		CommitUpdate(target)
+		candidate, err := PrepareCore(context.Background(), target, nil)
+		if err != nil || candidate != target {
+			t.Fatalf("%s: panel start selected %q: %v", link, candidate, err)
+		}
+		if data, _ := os.ReadFile(target); !bytes.Equal(data, content) {
+			t.Fatalf("%s: active core is %q", link, data)
+		}
+	}
+}
+
+func TestDirectCoreLinkRejectsPlainHTTP(t *testing.T) {
+	if path, err := DownloadAndSaveBinary("http://example.org/Xray-linux-64", "rw-core"); err == nil {
+		os.Remove(path)
+		t.Fatal("accepted plain HTTP link")
 	}
 }
 

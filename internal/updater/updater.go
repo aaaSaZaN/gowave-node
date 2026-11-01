@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -122,7 +123,12 @@ func DownloadAndSaveBinary(downloadURL, targetBinaryName string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	return saveBinary(data, downloadURL, targetBinaryName)
+	// The path names the format: signed links put a query after the extension.
+	u, err := url.Parse(downloadURL)
+	if err != nil {
+		return "", err
+	}
+	return saveBinary(data, u.Path, targetBinaryName)
 }
 func saveBinary(data []byte, source, name string) (string, error) {
 	f, err := os.CreateTemp("", name+"-*")

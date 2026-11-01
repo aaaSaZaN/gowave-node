@@ -221,6 +221,18 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	_ = json.NewEncoder(w).Encode(data)
 }
 
+// validUpdateTarget accepts a release version for either binary. Only the core
+// can come from a direct link: the node binary must match a published release.
+func validUpdateTarget(kind, version, downloadURL string) bool {
+	switch kind {
+	case "core":
+		return version != "" || downloadURL != ""
+	case "node":
+		return version != ""
+	}
+	return false
+}
+
 func newRouter(authMgr *auth.AuthManager, xrayCtrl *xray.Controller, statsSvc *stats.StatsService, handlerSvc *handler.Service, pluginSvc *plugin.Service, stateMgr *xray.StateManager, processMgr *xray.ProcessManager, internalServer *internalapi.Server, xrayRingBuffer, nodeRingBuffer *logger.RingBuffer) chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -307,17 +319,18 @@ func newRouter(authMgr *auth.AuthManager, xrayCtrl *xray.Controller, statsSvc *s
 			stateMgr.Operation.Lock()
 			defer stateMgr.Operation.Unlock()
 			var body struct {
-				Type    string `json:"type"`
-				Repo    string `json:"repo"`
-				Version string `json:"version"`
+				Type        string `json:"type"`
+				Repo        string `json:"repo"`
+				Version     string `json:"version"`
+				DownloadURL string `json:"downloadUrl"`
 			}
 			if err := apiutil.Decode(req, &body); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid body"})
 				return
 			}
 
-			if (body.Type != "node" && body.Type != "core") || body.Version == "" {
-				writeJSON(w, 400, map[string]string{"error": "type (node/core) and version are required"})
+			if !validUpdateTarget(body.Type, body.Version, body.DownloadURL) {
+				writeJSON(w, 400, map[string]string{"error": "type (node/core) and version are required; a core may use downloadUrl instead of version"})
 				return
 			}
 			repo := body.Repo
@@ -345,23 +358,36 @@ func newRouter(authMgr *auth.AuthManager, xrayCtrl *xray.Controller, statsSvc *s
 				repo = updater.NodeRepository
 			}
 
-			exact, err := updater.FetchRelease(repo, body.Version)
-			if err != nil {
-				writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
-				return
-			}
-			chosenRelease := &exact
+			var tmpPath, installedVersion string
+			if body.Type == "core" && body.DownloadURL != "" {
+				// A direct link has no release digest: trust rests on the
+				// HTTPS source and ValidateCoreBinary below.
+				var err error
+				if tmpPath, err = updater.DownloadAndSaveBinary(body.DownloadURL, targetBinary); err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+					return
+				}
+				installedVersion = "custom"
+			} else {
+				exact, err := updater.FetchRelease(repo, body.Version)
+				if err != nil {
+					writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+					return
+				}
+				chosenRelease := &exact
 
-			asset, err := updater.MatchAsset(chosenRelease.Assets, updater.GetCurrentOS(), updater.AssetArch(), targetBinary)
-			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
-				return
-			}
+				asset, err := updater.MatchAsset(chosenRelease.Assets, updater.GetCurrentOS(), updater.AssetArch(), targetBinary)
+				if err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
+					return
+				}
 
-			tmpPath, err := updater.DownloadReleaseBinary(*chosenRelease, *asset, targetBinary)
-			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
-				return
+				tmpPath, err = updater.DownloadReleaseBinary(*chosenRelease, *asset, targetBinary)
+				if err != nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"error": err.Error()})
+					return
+				}
+				installedVersion = chosenRelease.TagName
 			}
 
 			defer os.Remove(tmpPath)
@@ -413,7 +439,7 @@ func newRouter(authMgr *auth.AuthManager, xrayCtrl *xray.Controller, statsSvc *s
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"response": map[string]interface{}{
 					"success": true,
-					"version": chosenRelease.TagName,
+					"version": installedVersion,
 				},
 			})
 		})

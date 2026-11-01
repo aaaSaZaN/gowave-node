@@ -28,6 +28,24 @@ import (
 	"time"
 )
 
+func TestValidUpdateTarget(t *testing.T) {
+	for _, tc := range []struct {
+		kind, version, downloadURL string
+		want                       bool
+	}{
+		{"core", "v26.7.28", "", true},
+		{"core", "", "https://example.org/Xray-linux-64", true},
+		{"core", "", "", false},
+		{"node", "v1.1.2", "", true},
+		{"node", "", "https://example.org/gowave-node", false},
+		{"other", "v1", "https://example.org/x", false},
+	} {
+		if got := validUpdateTarget(tc.kind, tc.version, tc.downloadURL); got != tc.want {
+			t.Errorf("validUpdateTarget(%q, %q, %q) = %v", tc.kind, tc.version, tc.downloadURL, got)
+		}
+	}
+}
+
 func TestOriginalRoutesAndResponseContracts(t *testing.T) {
 	path := testutil.XrayServer(t, map[string]testutil.RPC{
 		"StatsService/GetSysStats": func(context.Context, proto.Message) (proto.Message, error) {
