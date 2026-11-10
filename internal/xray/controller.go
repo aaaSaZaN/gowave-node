@@ -17,6 +17,10 @@ import (
 	"github.com/aaaSaZaN/gowave-node/internal/integration"
 )
 
+// NodeProtocolVersion is the Remnawave node protocol implemented by this API.
+// Keep it independent of gowave-node releases: panels use it for feature gates.
+const NodeProtocolVersion = "3.4.2"
+
 type PluginInterface interface {
 	RunPreStart() error
 	Reset() error
@@ -34,8 +38,8 @@ type Controller struct {
 	systemStatsGetter       func() interface{}
 	isXrayOnline            bool
 	isXrayStartedProcessing bool
-	xrayVersion             *string
 	nodeVersion             string
+	xrayVersion             *string
 	pluginRevision          string
 }
 
@@ -70,7 +74,14 @@ func (req *StartXrayRequest) Validate() error {
 	}
 	return nil
 }
-func (c *Controller) startResponse(w http.ResponseWriter, started bool, err error) {
+func (c *Controller) reportedVersion(r *http.Request) string {
+	if r.Header.Get("X-Better-One") == "true" {
+		return c.nodeVersion
+	}
+	return NodeProtocolVersion
+}
+
+func (c *Controller) startResponse(w http.ResponseWriter, r *http.Request, started bool, err error) {
 	c.mu.Lock()
 	version := c.xrayVersion
 	c.mu.Unlock()
@@ -78,13 +89,13 @@ func (c *Controller) startResponse(w http.ResponseWriter, started bool, err erro
 	if err != nil {
 		message = err.Error()
 	}
-	writeJSON(w, 200, map[string]interface{}{"response": map[string]interface{}{"isStarted": started, "version": version, "error": message, "nodeInformation": map[string]string{"version": c.nodeVersion}, "system": c.systemStatsGetter()}})
+	writeJSON(w, 200, map[string]interface{}{"response": map[string]interface{}{"isStarted": started, "version": version, "error": message, "nodeInformation": map[string]string{"version": c.reportedVersion(r)}, "system": c.systemStatsGetter()}})
 }
 func (c *Controller) HandleStart(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	if c.isXrayStartedProcessing {
 		c.mu.Unlock()
-		c.startResponse(w, false, errors.New("Request already in progress"))
+		c.startResponse(w, r, false, errors.New("Request already in progress"))
 		return
 	}
 	c.isXrayStartedProcessing = true
@@ -102,7 +113,7 @@ func (c *Controller) HandleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := c.integrations.Sync(r.Context(), req.Internals.Integrations, req.Internals.Metadata); err != nil {
-		c.startResponse(w, false, err)
+		c.startResponse(w, r, false, err)
 		return
 	}
 	enabled, tags, position, revision := c.plugin.TorrentConfig()
@@ -115,22 +126,22 @@ func (c *Controller) HandleStart(w http.ResponseWriter, r *http.Request) {
 		_, err := c.client.GetSysStats(ctx)
 		cancel()
 		if err == nil && !c.state.IsNeedRestartCore(req.Internals.Hashes) {
-			c.startResponse(w, true, nil)
+			c.startResponse(w, r, true, nil)
 			return
 		}
 	}
 	if err := c.process.Prepare(r.Context(), req.XrayConfig["geodata"]); err != nil {
-		c.startResponse(w, false, err)
+		c.startResponse(w, r, false, err)
 		return
 	}
 	full := GenerateApiConfig(req.XrayConfig, TorrentBlockerState{Enabled: enabled, IncludeRuleTags: tags, RulePosition: position}, InternalConfig{SocketPath: c.cfg.InternalSocketPath, Token: c.cfg.InternalRestToken, XtlsApiSocketPath: c.cfg.XtlsApiSocketPath}, updater.HasNetAdmin())
 	if err := c.process.ValidateConfig(r.Context(), full); err != nil {
 		log.Printf("[XRAY] new config rejected, the running core keeps the previous one: %v", err)
-		c.startResponse(w, false, err)
+		c.startResponse(w, r, false, err)
 		return
 	}
 	if err := c.process.Stop(); err != nil {
-		c.startResponse(w, false, err)
+		c.startResponse(w, r, false, err)
 		return
 	}
 	c.mu.Lock()
@@ -138,24 +149,24 @@ func (c *Controller) HandleStart(w http.ResponseWriter, r *http.Request) {
 	c.mu.Unlock()
 	c.client.Close()
 	if err := c.plugin.RunPreStart(); err != nil {
-		c.startResponse(w, false, err)
+		c.startResponse(w, r, false, err)
 		return
 	}
 	if err := cleanupInboundSockets(full); err != nil {
-		c.startResponse(w, false, err)
+		c.startResponse(w, r, false, err)
 		return
 	}
 	c.state.ExtractUsersFromConfig(req.Internals.Hashes, full)
 	if err := c.process.Start(full); err != nil {
 		if stopErr := c.process.Stop(); stopErr != nil {
-			c.startResponse(w, false, errors.Join(err, stopErr))
+			c.startResponse(w, r, false, errors.Join(err, stopErr))
 			return
 		}
 		c.state.Cleanup()
 		if rollbackErr := c.process.RollbackActivation(); rollbackErr != nil {
 			log.Printf("[XRAY] rollback: %v", rollbackErr)
 		}
-		c.startResponse(w, false, err)
+		c.startResponse(w, r, false, err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
@@ -173,7 +184,7 @@ func (c *Controller) HandleStart(w http.ResponseWriter, r *http.Request) {
 			_ = c.process.Stop()
 			c.state.Invalidate()
 			_ = c.process.RollbackActivation()
-			c.startResponse(w, false, errors.New("Xray Core exited before becoming ready"))
+			c.startResponse(w, r, false, errors.New("Xray Core exited before becoming ready"))
 			return
 		}
 		select {
@@ -181,7 +192,7 @@ func (c *Controller) HandleStart(w http.ResponseWriter, r *http.Request) {
 			_ = c.process.Stop()
 			c.state.Invalidate()
 			_ = c.process.RollbackActivation()
-			c.startResponse(w, false, ctx.Err())
+			c.startResponse(w, r, false, ctx.Err())
 			return
 		case <-ticker.C:
 		}
@@ -196,7 +207,7 @@ func (c *Controller) HandleStart(w http.ResponseWriter, r *http.Request) {
 	c.mu.Unlock()
 	c.process.CommitActivation()
 	c.plugin.RunPostStart(req.Internals.Metadata)
-	c.startResponse(w, true, nil)
+	c.startResponse(w, r, true, nil)
 }
 func (c *Controller) HandleStop(w http.ResponseWriter, r *http.Request) {
 	c.state.Operation.Lock()
@@ -244,7 +255,7 @@ func (c *Controller) HandleHealthCheck(w http.ResponseWriter, r *http.Request) {
 			"isAlive":                  true,
 			"xrayInternalStatusCached": c.isXrayOnline && c.process.GetStatus().Up,
 			"xrayVersion":              c.xrayVersion,
-			"nodeVersion":              c.nodeVersion,
+			"nodeVersion":              c.reportedVersion(r),
 			"nodeType":                 "go",
 			"isCustomCore":             c.isCustomCore(),
 		},
@@ -257,7 +268,7 @@ func (c *Controller) HandleVersion(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"response": map[string]interface{}{
-			"nodeVersion":  c.nodeVersion,
+			"nodeVersion":  c.reportedVersion(r),
 			"nodeType":     "go",
 			"xrayVersion":  c.xrayVersion,
 			"isCustomCore": c.isCustomCore(),

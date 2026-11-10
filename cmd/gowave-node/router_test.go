@@ -94,6 +94,8 @@ func TestOriginalRoutesAndResponseContracts(t *testing.T) {
 		{"POST", "/node/xray/start", `{}`, "errorCode", 400},
 		{"GET", "/node/xray/stop", "", "isStopped", 200},
 		{"GET", "/node/xray/healthcheck", "", "isAlive", 200},
+		{"GET", "/node/xray/version", "", "nodeVersion", 200},
+		{"GET", "/node/version", "", "nodeVersion", 200},
 		{"POST", "/node/stats/get-user-online-status", `{"username":"1"}`, "isOnline", 200},
 		{"GET", "/node/stats/get-system-stats", "", "system", 200},
 		{"POST", "/node/stats/get-users-stats", `{"reset":true}`, "users", 200},
@@ -145,9 +147,45 @@ func TestOriginalRoutesAndResponseContracts(t *testing.T) {
 				}
 				body = value
 			}
+			if fixture.key == "isAlive" || fixture.key == "nodeVersion" {
+				if body["nodeVersion"] != "3.4.2" {
+					t.Fatalf("panel protocol version = %v, want 3.4.2", body["nodeVersion"])
+				}
+			}
 			if _, ok := body[fixture.key]; !ok {
 				t.Fatalf("missing %s: %s", fixture.key, response.Body)
 			}
 		})
 	}
+	for _, path := range []string{"/node/xray/healthcheck", "/node/xray/version", "/node/version"} {
+		for _, header := range []struct{ value, want string }{
+			{"true", AppVersion},
+			{"", "3.4.2"},
+			{"false", "3.4.2"},
+			{"TRUE", "3.4.2"},
+		} {
+			t.Run(path+"/header="+header.value, func(t *testing.T) {
+				request := httptest.NewRequest(http.MethodGet, path, nil)
+				request.Header.Set("X-Better-One", header.value)
+				request.Header.Set("Authorization", "Bearer "+token)
+				response := httptest.NewRecorder()
+				router.ServeHTTP(response, request)
+				var body struct{ Response struct{ NodeVersion string } }
+				if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+					t.Fatal(err)
+				}
+				if response.Code != http.StatusOK || body.Response.NodeVersion != header.want {
+					t.Fatalf("status=%d body=%s, want version %q", response.Code, response.Body, header.want)
+				}
+			})
+		}
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("X-Better-One", "true")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Errorf("%s: header without JWT returned status %d, want 401", path, response.Code)
+		}
+	}
+
 }

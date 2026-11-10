@@ -6,6 +6,12 @@
 
 The Go node control plane for [GoWave](https://github.com/aaaSaZaN/gowave).
 Xray runs as a separate process. The panel API preserves the v3.4.2 node protocol.
+Start, healthcheck, and version responses report the actual gowave-node release
+version when the panel sends `X-Better-One: true`. Without that exact header
+value, they report protocol version `3.4.2` for Remnawave compatibility checks.
+Older GoWave panels must be updated to send the header to see the actual release
+version. The header only selects version reporting; normal authentication is
+still required. CLI, startup logs, and updater always use the actual release version.
 
 The runtime needs no Node.js, Python, CGO, or LMDB library.
 
