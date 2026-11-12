@@ -104,6 +104,13 @@ To canary a published candidate, run
 `sudo GOWAVE_NODE_VERSION=v1.0.6-rc.1 sh -c "$(curl -fsSL ...)"`. An unavailable explicitly
 selected tag fails without switching services.
 
+Pushes to `main` (except documentation-only changes) that pass validation are
+published as the rolling `dev` pre-release, recreated at the top of the Releases
+page with each build. `releases/latest` and the default installer never select
+it: install it explicitly with `GOWAVE_NODE_VERSION=dev`, or update a running
+node with `gowave-node update --channel prerelease` (or a panel update request
+for the `dev` tag). The dev binary reports its version as `dev-<short commit>`.
+
 Candidate assets must include `checksums.txt`, `asn-prefixes.zip`, and the matching
 `gowave-node-linux-<architecture>` binary. The Candidate artifacts workflow builds
 these files without publishing a release. Publish only after the Validation

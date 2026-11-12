@@ -238,3 +238,24 @@ func TestStockUpgradeCopyFailureClearsPendingMarker(t *testing.T) {
 		t.Fatalf("active core changed: %q %v", data, err)
 	}
 }
+
+func TestCommitUpdateRemovesBackups(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "core")
+	for _, suffix := range []string{"", ".stock", ".previous", ".stock.previous", ".stock.pending"} {
+		if err := os.WriteFile(target+suffix, []byte("core"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	CommitUpdate(target)
+	CommitUpdate(target)
+	for _, suffix := range []string{".previous", ".stock.previous", ".stock.pending"} {
+		if _, err := os.Stat(target + suffix); !os.IsNotExist(err) {
+			t.Errorf("%s remains: %v", suffix, err)
+		}
+	}
+	for _, suffix := range []string{"", ".stock"} {
+		if _, err := os.Stat(target + suffix); err != nil {
+			t.Errorf("%s removed: %v", suffix, err)
+		}
+	}
+}

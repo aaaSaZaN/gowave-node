@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -100,7 +101,11 @@ func (c *Controller) HandleStart(w http.ResponseWriter, r *http.Request) {
 	}
 	c.isXrayStartedProcessing = true
 	c.mu.Unlock()
-	defer func() { c.mu.Lock(); c.isXrayStartedProcessing = false; c.mu.Unlock() }()
+	defer func() {
+		c.mu.Lock()
+		c.isXrayStartedProcessing = false
+		c.mu.Unlock()
+	}()
 	var req StartXrayRequest
 	if err := apiutil.Decode(r, &req); err != nil {
 		apiutil.Error(w, r, 400, "E000", err)
@@ -126,9 +131,19 @@ func (c *Controller) HandleStart(w http.ResponseWriter, r *http.Request) {
 		_, err := c.client.GetSysStats(ctx)
 		cancel()
 		if err == nil && !c.state.IsNeedRestartCore(req.Internals.Hashes) {
+			log.Printf("[XRAY] Core is running and configuration unchanged, restart skipped")
 			c.startResponse(w, r, true, nil)
 			return
 		}
+	}
+	// Release temporary configuration allocations after a restart attempt.
+	defer debug.FreeOSMemory()
+	if req.Internals.ForceRestart {
+		log.Printf("[XRAY] Core restart requested by panel (forceRestart=true)")
+	} else if !online {
+		log.Printf("[XRAY] Core is offline, starting...")
+	} else {
+		log.Printf("[XRAY] Core health or configuration requires restart...")
 	}
 	if err := c.process.Prepare(r.Context(), req.XrayConfig["geodata"]); err != nil {
 		c.startResponse(w, r, false, err)
@@ -203,6 +218,9 @@ func (c *Controller) HandleStart(w http.ResponseWriter, r *http.Request) {
 	c.pluginRevision = revision
 	if err == nil {
 		c.xrayVersion = &version
+		log.Printf("[XRAY] Core is ready and running (version: %s)", version)
+	} else {
+		log.Printf("[XRAY] Core is ready and running")
 	}
 	c.mu.Unlock()
 	c.process.CommitActivation()
@@ -216,6 +234,7 @@ func (c *Controller) HandleStop(w http.ResponseWriter, r *http.Request) {
 		apiutil.Error(w, r, 408, "E000", err)
 		return
 	}
+	log.Printf("[XRAY] Received stop request")
 	err := c.process.Stop()
 	if err == nil {
 		err = c.integrations.Stop(r.Context())
@@ -229,6 +248,9 @@ func (c *Controller) HandleStop(w http.ResponseWriter, r *http.Request) {
 		c.mu.Lock()
 		c.isXrayOnline = false
 		c.mu.Unlock()
+		log.Printf("[XRAY] Core stopped cleanly")
+	} else {
+		log.Printf("[XRAY] Error stopping core: %v", err)
 	}
 	writeJSON(w, 200, map[string]interface{}{"response": map[string]bool{"isStopped": err == nil}})
 }

@@ -204,12 +204,14 @@ func (p *ProcessManager) ValidateConfig(ctx context.Context, cfg map[string]inte
 	defer os.Remove(stage)
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	log.Printf("[XRAY] Validating configuration with core %s...", path)
 	cmd := exec.CommandContext(ctx, path, "run", "-test", "-format", "json", "-config", stage)
 	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+assetDir, "xray.location.asset="+assetDir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("invalid Xray configuration: %w: %s", err, out)
 	}
+	log.Printf("[XRAY] Configuration validation successful")
 	return nil
 }
 func (p *ProcessManager) Start(cfg map[string]interface{}) error {
@@ -238,6 +240,7 @@ func (p *ProcessManager) Start(cfg map[string]interface{}) error {
 		if err := p.prepareS6Run(); err != nil {
 			return err
 		}
+		log.Printf("[XRAY] Starting core via s6 supervisor: %s", p.serviceDir)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		out, err := exec.CommandContext(ctx, s6Command("s6-svc"), "-wu", "-T", "10000", "-o", p.serviceDir).CombinedOutput()
@@ -249,6 +252,7 @@ func (p *ProcessManager) Start(cfg map[string]interface{}) error {
 	if p.directCmd != nil {
 		return errors.New("core is already running")
 	}
+	log.Printf("[XRAY] Starting core: %s run -config %s", p.execPath, p.configPath)
 	cmd := exec.Command(p.execPath, "run", "-config", p.configPath)
 	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+p.assetDir, "xray.location.asset="+p.assetDir)
 	if p.ringBuffer != nil {
@@ -263,8 +267,11 @@ func (p *ProcessManager) Start(cfg map[string]interface{}) error {
 		cmd.Stderr = os.Stderr
 	}
 	if err = cmd.Start(); err != nil {
+		log.Printf("[XRAY] Failed to start core: %v", err)
 		return err
 	}
+	pid := cmd.Process.Pid
+	log.Printf("[XRAY] Core process started (PID: %d)", pid)
 	done := make(chan struct{})
 	p.done = done
 	p.directCmd = cmd
@@ -278,6 +285,11 @@ func (p *ProcessManager) Start(cfg map[string]interface{}) error {
 			p.directCmd = nil
 			p.exitErr = err
 		}
+		if err != nil {
+			log.Printf("[XRAY] Core process (PID: %d) exited: %v", pid, err)
+		} else {
+			log.Printf("[XRAY] Core process (PID: %d) exited cleanly", pid)
+		}
 	}()
 	return nil
 }
@@ -285,6 +297,7 @@ func (p *ProcessManager) Stop() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.s6Available {
+		log.Printf("[XRAY] Stopping core via s6 supervisor: %s", p.serviceDir)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		out, err := exec.CommandContext(ctx, s6Command("s6-svc"), "-wd", "-T", "10000", "-d", p.serviceDir).CombinedOutput()
@@ -297,6 +310,8 @@ func (p *ProcessManager) Stop() error {
 		return nil
 	}
 	cmd := p.directCmd
+	pid := cmd.Process.Pid
+	log.Printf("[XRAY] Stopping core process (PID: %d)...", pid)
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return err
 	}
@@ -309,6 +324,7 @@ func (p *ProcessManager) Stop() error {
 		<-p.done
 	}
 	p.directCmd = nil
+	log.Printf("[XRAY] Core process (PID: %d) stopped", pid)
 	return nil
 }
 
@@ -415,7 +431,15 @@ func (p *ProcessManager) RollbackActivation() error {
 	p.custom = updater.IsCustomCore(p.execPath)
 	return nil
 }
-func (p *ProcessManager) CommitActivation() { p.mu.Lock(); defer p.mu.Unlock(); p.activated = false }
+func (p *ProcessManager) CommitActivation() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.activated {
+		return
+	}
+	p.activated = false
+	_ = os.Remove(p.execPath + ".previous")
+}
 
 func (p *ProcessManager) IsCustom() bool { p.mu.Lock(); defer p.mu.Unlock(); return p.custom }
 

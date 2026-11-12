@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log"
+
 	"github.com/aaaSaZaN/gowave-node/internal/apiutil"
 	"github.com/aaaSaZaN/gowave-node/internal/plugin"
 	"github.com/aaaSaZaN/gowave-node/internal/xray"
@@ -144,6 +146,7 @@ func (s *Service) HandleAddUser(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	user := req.Data[0].Username
 	hash := req.HashData.VlessUUID
+	log.Printf("[HANDLER] Adding user %q (inbounds: %d)", user, len(req.Data))
 	if req.HashData.PrevVlessUUID != nil {
 		hash = *req.HashData.PrevVlessUUID
 	}
@@ -187,6 +190,7 @@ func (s *Service) HandleRemoveUser(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
+	log.Printf("[HANDLER] Removing user %q", req.Username)
 	// Revoke credentials even if IP collection/socket destruction is unavailable.
 	dropErr := s.dropUser(ctx, req.Username)
 	err := s.remove(ctx, req.Username, req.HashData.VlessUUID)
@@ -208,6 +212,7 @@ func (s *Service) HandleAddUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 55*time.Second)
 	defer cancel()
+	log.Printf("[HANDLER] Batch adding %d users", len(req.Users))
 	for _, tag := range req.AffectedInboundTags {
 		s.state.AddXtlsConfigInbound(tag)
 	}
@@ -254,6 +259,7 @@ func (s *Service) HandleRemoveUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 55*time.Second)
 	defer cancel()
+	log.Printf("[HANDLER] Batch removing %d users", len(req.Users))
 	var result error
 	for _, u := range req.Users {
 		dropErr := s.dropUser(ctx, u.UserID)
@@ -277,6 +283,7 @@ func (s *Service) HandleDropUsersConnections(w http.ResponseWriter, r *http.Requ
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
+	log.Printf("[HANDLER] Dropping connections for %d users", len(req.UserIDs))
 	var result error
 	for _, user := range req.UserIDs {
 		result = errors.Join(result, s.dropUser(ctx, user))
@@ -289,6 +296,7 @@ func (s *Service) HandleDropIPs(w http.ResponseWriter, r *http.Request) {
 		respond(w, err)
 		return
 	}
+	log.Printf("[HANDLER] Dropping connections for %d IPs", len(req.IPs))
 	err := s.plugin.DropConnections(req.IPs)
 	writeJSON(w, 200, map[string]interface{}{"response": map[string]bool{"success": err == nil}})
 }

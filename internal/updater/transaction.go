@@ -57,4 +57,8 @@ func InstallStockCore(candidate, target string) error {
 	}
 	return nil
 }
-func CommitUpdate(target string) { _ = os.Remove(target + ".stock.pending") }
+func CommitUpdate(target string) {
+	_ = os.Remove(target + ".stock.pending")
+	_ = os.Remove(target + ".previous")
+	_ = os.Remove(target + ".stock.previous")
+}

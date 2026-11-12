@@ -1,7 +1,6 @@
 package xray
 
 import (
-	"encoding/json"
 	"log"
 	"sync"
 
@@ -187,10 +186,45 @@ func cloneConfig(in map[string]interface{}) map[string]interface{} {
 	if in == nil {
 		return nil
 	}
-	b, _ := json.Marshal(in)
-	var out map[string]interface{}
-	_ = json.Unmarshal(b, &out)
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		out[k] = cloneValue(v)
+	}
 	return out
+}
+
+func cloneValue(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		return cloneConfig(val)
+	case []interface{}:
+		if val == nil {
+			return val
+		}
+		out := make([]interface{}, len(val))
+		for i, elem := range val {
+			out[i] = cloneValue(elem)
+		}
+		return out
+	case []string:
+		if val == nil {
+			return val
+		}
+		out := make([]string, len(val))
+		copy(out, val)
+		return out
+	case map[string]string:
+		if val == nil {
+			return val
+		}
+		out := make(map[string]string, len(val))
+		for k, v := range val {
+			out[k] = v
+		}
+		return out
+	default:
+		return v
+	}
 }
 func (s *StateManager) Invalidate() { s.mu.Lock(); defer s.mu.Unlock(); s.emptyConfigHash = "" }
 
