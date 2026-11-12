@@ -1,0 +1,126 @@
+name: Dev build
+
+# Every push to main that passes CI becomes the dev channel:
+#   - the rolling "dev" pre-release (releases/download/dev/...), recreated on each
+#     build so it stays on top of the Releases page; releases/latest and the
+#     default installer never see it. GOWAVE_NODE_VERSION=dev, the panel update
+#     request, or `gowave-node update --channel prerelease` install it.
+# Stable releases still come only from v* tags (release.yml).
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push supersedes a build that has not been published yet.
+concurrency:
+  group: dev-build
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  meta:
+    name: Version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: |
+          short="${GITHUB_SHA::7}"
+          echo "version=dev-$short" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Publish dev pre-release
+    needs: [ci, meta]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build node binaries
+        run: |
+          # GOARCH[:GOARM]; ARM builds are published as armv<GOARM>.
+          for target in amd64 386 arm64 arm:7 arm:6 arm:5 riscv64 mips mipsle mips64 mips64le; do
+            arch=${target%%:*}
+            arm=7
+            asset_arch=$arch
+            case $target in arm:*) arm=${target#arm:}; asset_arch=armv$arm ;; esac
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" GOARM="$arm" GOMIPS=softfloat go build -trimpath -ldflags="-s -w -X main.AppVersion=$VERSION" -o "dist/gowave-node-linux-$asset_arch" ./cmd/gowave-node
+          done
+
+      - name: Verify embedded version
+        run: |
+          embedded="$(./dist/gowave-node-linux-amd64 version)"
+          if [ "$embedded" != "gowave-node v$VERSION" ]; then
+            echo "Binary reports '${embedded}', expected 'gowave-node v$VERSION'; check the -X package path" >&2
+            exit 1
+          fi
+
+      - name: Build ASN index
+        run: |
+          sudo apt-get update && sudo apt-get install -y zstd
+          bash scripts/build-asn.sh dist/asn-prefixes.zip
+
+      - name: Checksums
+        working-directory: ./dist
+        run: |
+          cp ../install.sh install.sh
+          sha256sum gowave-node-* asn-prefixes.zip install.sh > checksums.txt
+          # Kept for updaters that look up the previous manifest name.
+          cp checksums.txt sha256sums.txt
+
+      # The release name carries the build version: the panel compares it with
+      # the node version to offer dev updates.
+      - name: Replace the dev pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "Unstable build of \`main\` at ${GITHUB_SHA}."
+            echo
+            echo "Install or update to it with \`GOWAVE_NODE_VERSION=dev\` passed to install.sh, from the running node: \`gowave-node update --channel prerelease\`, or through a panel update request for the \`dev\` tag."
+            echo
+            echo "### Latest commit"
+            git log -1 --format='%s%n%n%b' "$GITHUB_SHA"
+          } > notes.md
+          gh release delete dev --yes --cleanup-tag || true
+          gh release create dev \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "$VERSION" \
+            --notes-file notes.md \
+            dist/gowave-node-linux-amd64 \
+            dist/gowave-node-linux-386 \
+            dist/gowave-node-linux-arm64 \
+            dist/gowave-node-linux-armv7 \
+            dist/gowave-node-linux-armv6 \
+            dist/gowave-node-linux-armv5 \
+            dist/gowave-node-linux-riscv64 \
+            dist/gowave-node-linux-mips \
+            dist/gowave-node-linux-mipsle \
+            dist/gowave-node-linux-mips64 \
+            dist/gowave-node-linux-mips64le \
+            dist/asn-prefixes.zip \
+            dist/install.sh \
+            dist/checksums.txt \
+            dist/sha256sums.txt

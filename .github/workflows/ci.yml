@@ -1,8 +1,10 @@
 name: Validation
+
+# Pushes to main run these checks through dev.yml, which publishes the dev
+# channel only after they pass; tags can be canaried through artifacts.yml.
 on:
   pull_request:
-  push:
-    branches: [main]
+  workflow_call:
   workflow_dispatch:
   schedule:
     - cron: '21 4 * * 1'
