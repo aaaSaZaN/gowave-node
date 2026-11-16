@@ -35,6 +35,8 @@ jobs:
         with:
           go-version-file: go.mod
       - run: python3 scripts/fetch-test-core.py '${{ matrix.core }}' .smoke
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - run: GOWAVE_NODE_TEST_CORE="$PWD/.smoke/rw-core" go test -race ./internal/xray -run RealCore -v
       - run: CGO_ENABLED=0 go build -o .smoke/gowave-node ./cmd/gowave-node
       - run: docker build -f tests/smoke/Dockerfile -t gowave-node-smoke .
