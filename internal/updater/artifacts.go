@@ -213,6 +213,9 @@ func PrepareAssets(ctx context.Context, dir string, geodata interface{}) error {
 		if a.File == "" || a.File == "." || a.File == ".." || filepath.Base(a.File) != a.File || strings.ContainsAny(a.File, "/\\") {
 			return errors.New("asset must be a plain file name")
 		}
+		if geodataURL(a.File) != "" {
+			continue
+		}
 		target := filepath.Join(dir, a.File)
 		if fi, err := os.Stat(target); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
 			continue
@@ -224,24 +227,7 @@ func PrepareAssets(ctx context.Context, dir string, geodata interface{}) error {
 		if err = os.MkdirAll(dir, 0755); err != nil {
 			return err
 		}
-		f, err := os.CreateTemp(dir, ".asset-*")
-		if err != nil {
-			return err
-		}
-		tmp := f.Name()
-		_, err = f.Write(data)
-		closeErr := f.Close()
-		if err == nil {
-			err = closeErr
-		}
-		if err == nil {
-			err = os.Chmod(tmp, 0644)
-		}
-		if err == nil {
-			err = os.Rename(tmp, target)
-		}
-		os.Remove(tmp)
-		if err != nil {
+		if err := writeGeodata(dir, a.File, data); err != nil {
 			return err
 		}
 	}

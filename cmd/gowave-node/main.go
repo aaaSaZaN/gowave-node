@@ -87,17 +87,27 @@ func main() {
 		case "restart":
 			cli.RunRestartCLI()
 			return
-		case "update":
+		case "update", "--update":
 			cli.RunUpdateCLI(AppVersion, os.Args[2:])
 			return
 		case "core":
 			cli.RunCoreCLI(os.Args[2:])
 			return
+		case "geodata":
+			if len(os.Args) != 3 || os.Args[2] != "update" {
+				fmt.Println("Usage: gowave-node geodata update")
+				return
+			}
+			if err := cli.UpdateGeodata(); err != nil {
+				log.Print(err)
+				os.Exit(1)
+			}
+			return
 		case "version", "-v", "--version":
 			fmt.Printf("gowave-node v%s\n", AppVersion)
 			return
 		case "help", "-h", "--help":
-			fmt.Printf("Usage: %s [command]\n\nCommands:\n  status                   Show node status and Xray core info\n  restart                  Restart gowave-node service\n  logs  [-n lines] [-f]    View Node service logs\n  xlogs [-n lines] [-f]    View Xray core logs\n  update [flags]           Update gowave-node binary\n  core install [flags]     Install or update Xray core\n  core update              Update Xray core to latest\n  version                  Show version\n", os.Args[0])
+			fmt.Printf("Usage: %s [command]\n\nCommands:\n  status                   Show node status and Xray core info\n  restart                  Restart gowave-node service\n  logs  [-n lines] [-f]    View Node service logs\n  xlogs [-n lines] [-f]    View Xray core logs\n  update [--with-core]     Update gowave-node, optionally followed by Xray\n  core install [flags]     Install or update Xray core\n  core update              Update Xray using CUSTOM_CORE_URL or a release\n  geodata update           Refresh files configured by GEOIP_URL and GEOSITE_URL\n  version                  Show version\n", os.Args[0])
 			return
 		}
 	}
@@ -342,6 +352,10 @@ func newRouter(authMgr *auth.AuthManager, xrayCtrl *xray.Controller, statsSvc *s
 			destPath, _ = filepath.EvalSymlinks(destPath)
 
 			if body.Type == "core" {
+				if processMgr.HasLocalCoreOverride() {
+					writeJSON(w, http.StatusConflict, map[string]string{"error": "Xray core is managed locally"})
+					return
+				}
 				targetBinary = "rw-core"
 				destPath = processMgr.GetExecPath()
 				if destPath == "" {

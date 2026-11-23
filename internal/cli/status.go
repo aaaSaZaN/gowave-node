@@ -1,13 +1,16 @@
 package cli
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/aaaSaZaN/gowave-node/internal/updater"
+	"github.com/aaaSaZaN/gowave-node/internal/xray"
 )
 
 func RunStatusCLI(version string) {
@@ -43,6 +46,13 @@ func RunStatusCLI(version string) {
 	if exe, err := os.Executable(); err == nil {
 		corePaths = append([]string{filepath.Join(filepath.Dir(exe), "rw-core")}, corePaths...)
 	}
+	localCore := os.Getenv("CUSTOM_CORE_URL") != ""
+	if localCore {
+		corePaths = nil
+		if path, err := xray.LocalCorePath(); err == nil {
+			corePaths = []string{path}
+		}
+	}
 	var foundCore string
 	var coreVer string
 	for _, cp := range corePaths {
@@ -62,6 +72,16 @@ func RunStatusCLI(version string) {
 			coreVer = "detected"
 		}
 		fmt.Printf("  %s●%s Xray Core:         %s%s%s (%s)\n", colorGreen, colorReset, colorCyan, coreVer, colorReset, foundCore)
+		if localCore {
+			fmt.Println("    Source: CUSTOM_CORE_URL")
+			if file, err := os.Open(foundCore); err == nil {
+				hash := sha256.New()
+				if _, err := io.Copy(hash, file); err == nil {
+					fmt.Printf("    SHA-256: %x\n", hash.Sum(nil))
+				}
+				file.Close()
+			}
+		}
 	} else {
 		fmt.Printf("  %s○%s Xray Core:         %sNOT FOUND%s (run 'gowave-node core install')\n", colorRed, colorReset, colorRed, colorReset)
 	}

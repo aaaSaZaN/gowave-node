@@ -6,7 +6,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -119,9 +122,36 @@ func MatchAsset(assets []ReleaseAsset, targetOS, targetArch, binaryName string) 
 func DownloadAndSaveBinary(downloadURL, targetBinaryName string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
+	return downloadBinary(ctx, downloadURL, targetBinaryName, "")
+}
+
+func DownloadLocalCore(ctx context.Context, source, checksum string) (string, error) {
+	if checksum != "" {
+		if _, err := hex.DecodeString(checksum); err != nil || len(checksum) != sha256.Size*2 {
+			return "", errors.New("invalid CUSTOM_CORE_SHA256")
+		}
+	}
+	path, err := downloadBinary(ctx, source, "rw-core", checksum)
+	if err != nil {
+		return "", err
+	}
+	if err := ValidateCoreBinary(path); err != nil {
+		os.Remove(path)
+		return "", err
+	}
+	return path, nil
+}
+
+func downloadBinary(ctx context.Context, downloadURL, targetBinaryName, checksum string) (string, error) {
 	data, err := fetchBytes(ctx, downloadURL, MaxArtifactSize)
 	if err != nil {
 		return "", err
+	}
+	if checksum != "" {
+		sum := sha256.Sum256(data)
+		if !strings.EqualFold(hex.EncodeToString(sum[:]), checksum) {
+			return "", errors.New("custom core SHA-256 mismatch")
+		}
 	}
 	// The path names the format: signed links put a query after the extension.
 	u, err := url.Parse(downloadURL)
@@ -347,10 +377,10 @@ func GetCurrentOS() string {
 	return runtime.GOOS
 }
 
-func EnsureCore(targetPath string) (string, error) {
+func EnsureCore(targetPath, assetDir string) (string, error) {
 	if targetPath != "" {
 		if fi, err := os.Stat(targetPath); err == nil && !fi.IsDir() {
-			if err := EnsureGeodata(filepath.Dir(targetPath)); err != nil {
+			if err := EnsureGeodata(assetDir); err != nil {
 				return "", err
 			}
 			return targetPath, nil
@@ -396,12 +426,23 @@ func EnsureCore(targetPath string) (string, error) {
 		return "", fmt.Errorf("failed to install core to %s: %w", targetPath, err)
 	}
 
-	if err := EnsureGeodata(filepath.Dir(targetPath)); err != nil {
+	if err := EnsureGeodata(assetDir); err != nil {
 		return "", err
 	}
 
 	fmt.Printf("[CORE] Successfully installed Xray core to %s!\n", targetPath)
 	return targetPath, nil
+}
+
+func geodataURL(name string) string {
+	switch name {
+	case "geoip.dat":
+		return os.Getenv("GEOIP_URL")
+	case "geosite.dat":
+		return os.Getenv("GEOSITE_URL")
+	default:
+		return ""
+	}
 }
 
 func EnsureGeodata(targetDirs ...string) error {
@@ -414,7 +455,22 @@ func EnsureGeodata(targetDirs ...string) error {
 	}
 	for _, name := range []string{"geoip.dat", "geosite.dat"} {
 		target := filepath.Join(dir, name)
-		if fi, err := os.Stat(target); err == nil && fi.Mode().IsRegular() && fi.Size() > 1024 {
+		raw := geodataURL(name)
+		minSize := int64(1024)
+		if raw != "" || os.Getenv("XRAY_LOCATION_ASSET") != "" {
+			minSize = 0
+		}
+		if fi, err := os.Stat(target); err == nil && fi.Mode().IsRegular() && fi.Size() > minSize {
+			continue
+		}
+		if raw != "" {
+			data, err := downloadFileBytes(raw)
+			if err != nil {
+				return fmt.Errorf("prepare %s: %w", name, err)
+			}
+			if err := writeGeodata(dir, name, data); err != nil {
+				return err
+			}
 			continue
 		}
 		copied := false
@@ -434,7 +490,7 @@ func EnsureGeodata(targetDirs ...string) error {
 		if copied {
 			continue
 		}
-		raw := "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/" + name
+		raw = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/" + name
 		data, err := downloadFileBytes(raw)
 		if err != nil {
 			return fmt.Errorf("prepare %s: %w", name, err)
@@ -442,28 +498,64 @@ func EnsureGeodata(targetDirs ...string) error {
 		if len(data) <= 1024 {
 			return fmt.Errorf("invalid geodata %s", name)
 		}
-		f, err := os.CreateTemp(dir, ".geodata-*")
-		if err != nil {
-			return err
-		}
-		tmp := f.Name()
-		_, err = f.Write(data)
-		closeErr := f.Close()
-		if err == nil {
-			err = closeErr
-		}
-		if err == nil {
-			err = os.Chmod(tmp, 0644)
-		}
-		if err == nil {
-			err = os.Rename(tmp, target)
-		}
-		os.Remove(tmp)
-		if err != nil {
+		if err := writeGeodata(dir, name, data); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func RefreshGeodata(dir string) error {
+	data := make(map[string][]byte, 2)
+	for _, name := range []string{"geoip.dat", "geosite.dat"} {
+		if raw := geodataURL(name); raw != "" {
+			file, err := downloadFileBytes(raw)
+			if err != nil {
+				return fmt.Errorf("update %s: %w", name, err)
+			}
+			data[name] = file
+		}
+	}
+	if len(data) == 0 {
+		return errors.New("set GEOIP_URL or GEOSITE_URL in .env")
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	unlock, err := LockTarget(filepath.Join(dir, "geodata"))
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	for _, name := range []string{"geoip.dat", "geosite.dat"} {
+		if file := data[name]; file != nil {
+			if err := writeGeodata(dir, name, file); err != nil {
+				return fmt.Errorf("update %s: %w", name, err)
+			}
+		}
+	}
+	return nil
+}
+
+func writeGeodata(dir, name string, data []byte) error {
+	f, err := os.CreateTemp(dir, ".geodata-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, err = f.Write(data)
+	closeErr := f.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Chmod(tmp, 0644)
+	}
+	if err == nil {
+		err = os.Rename(tmp, filepath.Join(dir, name))
+	}
+	os.Remove(tmp)
+	return err
 }
 
 func downloadFileBytes(url string) ([]byte, error) {

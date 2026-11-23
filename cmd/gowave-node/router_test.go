@@ -23,6 +23,9 @@ import (
 	"google.golang.org/protobuf/proto"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +89,60 @@ func TestOriginalRoutesAndResponseContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	router := newRouter(authentication, controller, stats.NewStatsService(client, nil, plugins), handler.NewService(client, state, plugins), plugins, state, process, internalapi.NewServer(cfg, state, plugins, process, ring, ring), ring, ring)
+	t.Run("panel update cannot replace a local core", func(t *testing.T) {
+		dir := t.TempDir()
+		for _, name := range []string{"geoip.dat", "geosite.dat"} {
+			if err := os.WriteFile(filepath.Join(dir, name), make([]byte, 1025), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Setenv("XRAY_LOCATION_ASSET", dir)
+		t.Setenv("CUSTOM_CORE_URL", "https://example.invalid/local-xray")
+		localProcess := xray.NewProcessManager(dir, ring)
+		localController := xray.NewController(cfg, state, localProcess, client, plugins, func() interface{} { return stats.GetSystemCombined(nil) }, AppVersion)
+		localRouter := newRouter(authentication, localController, stats.NewStatsService(client, nil, plugins), handler.NewService(client, state, plugins), plugins, state, localProcess, internalapi.NewServer(cfg, state, plugins, localProcess, ring, ring), ring, ring)
+		request := httptest.NewRequest(http.MethodPost, "/node/updates/apply", strings.NewReader(`{"type":"core","downloadUrl":"https://example.invalid/panel-xray"}`))
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		localRouter.ServeHTTP(response, request)
+		if response.Code != http.StatusConflict {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body)
+		}
+		for _, tc := range []struct {
+			name, header string
+			router       http.Handler
+			wantSource   string
+		}{
+			{"Gowave local core", "true", localRouter, "local"},
+			{"Gowave panel core", "true", router, "panel"},
+			{"legacy client", "", localRouter, ""},
+			{"explicit opt-out", "false", localRouter, ""},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				request := httptest.NewRequest(http.MethodGet, "/node/xray/healthcheck", nil)
+				request.Header.Set("Authorization", "Bearer "+token)
+				if tc.header != "" {
+					request.Header.Set("X-Better-One", tc.header)
+				}
+				response := httptest.NewRecorder()
+				tc.router.ServeHTTP(response, request)
+				var body struct {
+					Response map[string]json.RawMessage `json:"response"`
+				}
+				if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+					t.Fatal(err)
+				}
+				got := string(body.Response["coreSource"])
+				want := ""
+				if tc.wantSource != "" {
+					want = strconv.Quote(tc.wantSource)
+				}
+				if response.Code != http.StatusOK || got != want {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body)
+				}
+			})
+		}
+	})
 	id := "00000000-0000-4000-8000-000000000001"
 	fixtures := []struct {
 		method, path, body, key string

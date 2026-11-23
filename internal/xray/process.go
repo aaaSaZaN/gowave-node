@@ -31,6 +31,7 @@ type ProcessStatus struct {
 }
 
 type ProcessManager struct {
+	localCoreURL  string
 	custom        bool
 	pendingCustom bool
 	activated     bool
@@ -46,6 +47,14 @@ type ProcessManager struct {
 	configPath    string
 	execPath      string
 	ringBuffer    *logger.RingBuffer
+}
+
+func LocalCorePath() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(exe), "rw-core.local"), nil
 }
 
 func FindCorePath(s6Available bool) string {
@@ -102,34 +111,54 @@ func NewProcessManager(serviceDir string, ringBuffer *logger.RingBuffer) *Proces
 	s6Available := err == nil
 
 	execPath := FindCorePath(s6Available)
-	if !s6Available && execPath == "" {
+	localCoreURL := os.Getenv("CUSTOM_CORE_URL")
+	assetDir := assetDirectory(execPath)
+	if localCoreURL != "" {
+		localPath, err := LocalCorePath()
+		if err != nil {
+			log.Printf("[CORE] Failed to resolve local core path: %v", err)
+		}
+		if execPath == "" {
+			assetDir = assetDirectory(localPath)
+		}
+		execPath = localPath
+	}
+	if localCoreURL == "" && !s6Available && execPath == "" {
 		targetDir := "."
 		if exe, err := os.Executable(); err == nil {
 			targetDir = filepath.Dir(exe)
 		}
 		targetPath := filepath.Join(targetDir, "rw-core")
-		if downloaded, err := updater.EnsureCore(targetPath); err == nil && downloaded != "" {
+		targetAssets := targetDir
+		if dir := os.Getenv("XRAY_LOCATION_ASSET"); dir != "" {
+			targetAssets = dir
+		}
+		if downloaded, err := updater.EnsureCore(targetPath, targetAssets); err == nil && downloaded != "" {
 			execPath = downloaded
+			assetDir = assetDirectory(execPath)
 		} else {
 			log.Printf("[CORE] Warning: Xray core not found and auto-download failed: %v", err)
 		}
 	} else if execPath != "" {
-		if err := updater.EnsureGeodata(assetDirectory(execPath)); err != nil {
+		if err := updater.EnsureGeodata(assetDir); err != nil {
 			log.Printf("[CORE] geodata preparation failed: %v", err)
 		}
 	}
 
 	return &ProcessManager{
-		serviceDir:  serviceDir,
-		controlFifo: controlFifo,
-		s6Available: s6Available,
-		configPath:  filepath.Join(config.RuntimeDir(), "xray.json"),
-		assetDir:    assetDirectory(execPath),
-		custom:      updater.IsCustomCore(execPath),
-		execPath:    execPath,
-		ringBuffer:  ringBuffer,
+		localCoreURL: localCoreURL,
+		serviceDir:   serviceDir,
+		controlFifo:  controlFifo,
+		s6Available:  s6Available,
+		configPath:   filepath.Join(config.RuntimeDir(), "xray.json"),
+		assetDir:     assetDir,
+		custom:       localCoreURL != "" || updater.IsCustomCore(execPath),
+		execPath:     execPath,
+		ringBuffer:   ringBuffer,
 	}
 }
+
+func (p *ProcessManager) HasLocalCoreOverride() bool { return p.localCoreURL != "" }
 
 func (p *ProcessManager) GetExecPath() string {
 	p.mu.Lock()
@@ -161,27 +190,74 @@ func assetDirectory(core string) string {
 	return filepath.Dir(core)
 }
 
+func GeodataDirectory() (string, error) {
+	serviceDir := os.Getenv("XRAY_S6_SERVICE_DIR")
+	if serviceDir == "" {
+		serviceDir = "/run/service/xray"
+	}
+	_, err := os.Stat(filepath.Join(serviceDir, "supervise", "control"))
+	core := FindCorePath(err == nil)
+	if core == "" {
+		core, err = LocalCorePath()
+		if err != nil {
+			return "", err
+		}
+	}
+	return assetDirectory(core), nil
+}
+
 // Prepare is called with the controller's state.Operation gate held.
 func (p *ProcessManager) Prepare(ctx context.Context, geodata interface{}) error {
 	p.mu.Lock()
 	execPath, assetDir, pendingCore := p.execPath, p.assetDir, p.pendingCore
 	p.mu.Unlock()
-	candidate, err := updater.PrepareCore(ctx, execPath, geodata)
-	if err != nil {
-		return err
+	candidate := execPath
+	pendingCustom := p.HasLocalCoreOverride()
+	if pendingCustom {
+		if cfg, ok := geodata.(map[string]interface{}); ok && cfg["core"] != nil {
+			log.Printf("[XRAY] Ignoring panel core because CUSTOM_CORE_URL is set")
+		}
+		if err := p.ensureLocalCore(ctx, execPath); err != nil {
+			return err
+		}
+	} else {
+		var err error
+		candidate, err = updater.PrepareCore(ctx, execPath, geodata)
+		if err != nil {
+			return err
+		}
+		if cfg, ok := geodata.(map[string]interface{}); ok {
+			pendingCustom = cfg["core"] != nil
+		}
 	}
 	if pendingCore != "" && pendingCore != execPath && pendingCore != execPath+".stock" {
 		os.Remove(pendingCore)
-	}
-	pendingCustom := false
-	if cfg, ok := geodata.(map[string]interface{}); ok {
-		pendingCustom = cfg["core"] != nil
 	}
 	p.mu.Lock()
 	p.pendingCore = candidate
 	p.pendingCustom = pendingCustom
 	p.mu.Unlock()
 	return updater.PrepareAssets(ctx, assetDir, geodata)
+}
+
+func (p *ProcessManager) ensureLocalCore(ctx context.Context, path string) error {
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		return err
+	}
+	unlock, err := updater.LockTarget(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		return err
+	}
+	candidate, err := updater.DownloadLocalCore(ctx, p.localCoreURL, os.Getenv("CUSTOM_CORE_SHA256"))
+	if err != nil {
+		return err
+	}
+	defer os.Remove(candidate)
+	return updater.AtomicReplace(candidate, path)
 }
 
 // ValidateConfig is called with the controller's state.Operation gate held.

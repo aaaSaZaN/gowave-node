@@ -75,8 +75,12 @@ func (req *StartXrayRequest) Validate() error {
 	}
 	return nil
 }
+func isGowaveRequest(r *http.Request) bool {
+	return r.Header.Get("X-Better-One") == "true"
+}
+
 func (c *Controller) reportedVersion(r *http.Request) string {
-	if r.Header.Get("X-Better-One") == "true" {
+	if isGowaveRequest(r) {
 		return c.nodeVersion
 	}
 	return NodeProtocolVersion
@@ -272,16 +276,21 @@ func (c *Controller) HandleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"response": map[string]interface{}{
-			"isAlive":                  true,
-			"xrayInternalStatusCached": c.isXrayOnline && c.process.GetStatus().Up,
-			"xrayVersion":              c.xrayVersion,
-			"nodeVersion":              c.reportedVersion(r),
-			"nodeType":                 "go",
-			"isCustomCore":             c.isCustomCore(),
-		},
-	})
+	response := map[string]interface{}{
+		"isAlive":                  true,
+		"xrayInternalStatusCached": c.isXrayOnline && c.process.GetStatus().Up,
+		"xrayVersion":              c.xrayVersion,
+		"nodeVersion":              c.reportedVersion(r),
+		"nodeType":                 "go",
+		"isCustomCore":             c.isCustomCore(),
+	}
+	if isGowaveRequest(r) {
+		response["coreSource"] = "panel"
+		if c.process.HasLocalCoreOverride() {
+			response["coreSource"] = "local"
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"response": response})
 }
 
 func (c *Controller) HandleVersion(w http.ResponseWriter, r *http.Request) {

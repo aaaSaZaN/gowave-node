@@ -1,6 +1,7 @@
 package xray
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -9,6 +10,33 @@ import (
 	"path/filepath"
 	"testing"
 )
+
+func TestLocalCoreTakesPrecedenceOverPanelCore(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "rw-core.local")
+	if err := os.WriteFile(local, []byte("local core"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	process := &ProcessManager{localCoreURL: "https://example.invalid/xray", execPath: local, assetDir: dir}
+	geodata := map[string]interface{}{
+		"core": map[string]interface{}{"url": "https://example.invalid/panel-core", "sha256": "invalid"},
+	}
+	if err := process.Prepare(context.Background(), geodata); err != nil {
+		t.Fatal(err)
+	}
+	if process.pendingCore != local || !process.pendingCustom {
+		t.Fatalf("expected the installed local core, got %q (custom=%v)", process.pendingCore, process.pendingCustom)
+	}
+	geodata["assets"] = []map[string]interface{}{{"file": "../asset"}}
+	if err := process.Prepare(context.Background(), geodata); err == nil {
+		t.Fatal("local override skipped panel asset validation")
+	}
+	process.localCoreURL = ""
+	delete(geodata, "assets")
+	if err := process.Prepare(context.Background(), geodata); err == nil {
+		t.Fatal("expected panel core validation after removing local override")
+	}
+}
 
 func TestStartResponseProtocolVersion(t *testing.T) {
 	for _, header := range []struct {

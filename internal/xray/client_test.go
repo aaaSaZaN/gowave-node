@@ -110,8 +110,7 @@ func BenchmarkUserStats(b *testing.B) {
 	client := NewClient(path)
 	defer client.Close()
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		users, err := client.GetAllUsersStats(context.Background(), false)
 		if err != nil || len(users) != 8000 {
 			b.Fatalf("users=%d err=%v", len(users), err)

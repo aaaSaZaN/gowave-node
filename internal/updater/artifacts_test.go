@@ -1,8 +1,10 @@
 package updater
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,6 +16,138 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestConfiguredGeodata(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases/latest/download/geoip.dat":
+			http.Redirect(w, r, "/geoip.dat", http.StatusFound)
+		case "/geoip.dat":
+			io.WriteString(w, "custom IP data")
+		case "/geosite.dat":
+			io.WriteString(w, "custom site data")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	previous := HTTPClient
+	HTTPClient = server.Client()
+	defer func() { HTTPClient = previous }()
+
+	dir := t.TempDir()
+	t.Setenv("XRAY_LOCATION_ASSET", dir)
+	t.Setenv("GEOIP_URL", server.URL+"/releases/latest/download/geoip.dat")
+	t.Setenv("GEOSITE_URL", "")
+	sitePath := filepath.Join(dir, "geosite.dat")
+	if err := os.WriteFile(sitePath, []byte("local sites"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	checkFile := func(name, want string) {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || string(data) != want {
+			t.Fatalf("%s = %q, %v; want %q", name, data, err, want)
+		}
+	}
+	panel := map[string]any{"assets": []map[string]string{
+		{"file": "geoip.dat", "url": server.URL + "/missing"},
+	}}
+	if err := PrepareAssets(context.Background(), dir, panel); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureGeodata(dir); err != nil {
+		t.Fatal(err)
+	}
+	checkFile("geoip.dat", "custom IP data")
+	checkFile("geosite.dat", "local sites")
+
+	if err := os.WriteFile(filepath.Join(dir, "geoip.dat"), []byte("old IP data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureGeodata(dir); err != nil {
+		t.Fatal(err)
+	}
+	checkFile("geoip.dat", "old IP data")
+	t.Setenv("GEOSITE_URL", server.URL+"/missing")
+	if err := RefreshGeodata(dir); err == nil {
+		t.Fatal("accepted a failed geosite download")
+	}
+	checkFile("geoip.dat", "old IP data")
+	checkFile("geosite.dat", "local sites")
+	t.Setenv("GEOSITE_URL", server.URL+"/geosite.dat")
+	if err := RefreshGeodata(dir); err != nil {
+		t.Fatal(err)
+	}
+	checkFile("geoip.dat", "custom IP data")
+	checkFile("geosite.dat", "custom site data")
+}
+
+func TestLocalCoreDownload(t *testing.T) {
+	binary := []byte("#!/bin/sh\necho 'Xray 26.11.1'\n")
+	var zipFile, tarFile bytes.Buffer
+	zipWriter := zip.NewWriter(&zipFile)
+	entry, err := zipWriter.Create("release/xray")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write(binary); err != nil {
+		t.Fatal(err)
+	}
+	if err := zipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	gzipWriter := gzip.NewWriter(&tarFile)
+	tarWriter := tar.NewWriter(gzipWriter)
+	if err := tarWriter.WriteHeader(&tar.Header{Name: "release/xray", Mode: 0755, Size: int64(len(binary))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tarWriter.Write(binary); err != nil {
+		t.Fatal(err)
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{"/xray": binary, "/xray.zip": zipFile.Bytes(), "/xray.tar.gz": tarFile.Bytes(), "/xray.tgz": tarFile.Bytes()}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/releases/latest/download/xray.zip" {
+			http.Redirect(w, r, "/xray.zip", http.StatusFound)
+			return
+		}
+		w.Write(files[r.URL.Path])
+	}))
+	defer server.Close()
+	previous := HTTPClient
+	HTTPClient = server.Client()
+	defer func() { HTTPClient = previous }()
+
+	tarDigest := sha256.Sum256(tarFile.Bytes())
+	for _, tc := range []struct {
+		path, checksum string
+	}{
+		{"/xray", ""},
+		{"/releases/latest/download/xray.zip?token=test", ""},
+		{"/xray.tar.gz", ""},
+		{"/xray.tgz", hex.EncodeToString(tarDigest[:])},
+	} {
+		path, err := DownloadLocalCore(context.Background(), server.URL+tc.path, tc.checksum)
+		if err != nil {
+			t.Fatal(tc.path, err)
+		}
+		content, err := os.ReadFile(path)
+		os.Remove(path)
+		if err != nil || !bytes.Equal(content, binary) {
+			t.Fatalf("%s: got %q, %v", tc.path, content, err)
+		}
+	}
+	if path, err := DownloadLocalCore(context.Background(), server.URL+"/xray.zip", strings.Repeat("0", 64)); err == nil {
+		os.Remove(path)
+		t.Fatal("accepted mismatched archive digest")
+	}
+}
 
 func TestAssetSelectionRejectsWrongProductOSAndChecksums(t *testing.T) {
 	for _, assets := range [][]ReleaseAsset{

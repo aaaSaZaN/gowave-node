@@ -71,22 +71,26 @@ var waitForReady = WaitReady
 var updateDelay = time.Second
 
 func CompleteUpdate(target string, core bool, oldPID int) error {
+	return completeUpdate(target, oldPID, false, func() error { return updater.Rollback(target) })
+}
+
+func completeUpdate(target string, oldPID int, requireCore bool, rollback func() error) error {
 	// Give an HTTP caller time to consume the successful response before restarting.
 	time.Sleep(updateDelay)
 	err := restartNode()
 	if err == nil {
 		// Xray configuration arrives from the panel after the node restarts.
-		err = waitForReady(false, 120*time.Second, oldPID)
+		err = waitForReady(requireCore, 120*time.Second, oldPID)
 	}
 	if err != nil {
-		rollbackErr := updater.Rollback(target)
+		rollbackErr := rollback()
 		if rollbackErr != nil {
 			return fmt.Errorf("update failed: %v; rollback failed: %w", err, rollbackErr)
 		}
 		if restartErr := restartNode(); restartErr != nil {
 			return fmt.Errorf("update failed: %v; rollback restart: %w", err, restartErr)
 		}
-		return fmt.Errorf("update failed and previous executable restored: %w", err)
+		return fmt.Errorf("update failed and rolled back: %w", err)
 	}
 	updater.CommitUpdate(target)
 	return nil

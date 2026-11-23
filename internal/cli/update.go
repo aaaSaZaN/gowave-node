@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,11 +18,14 @@ func RunUpdateCLI(currentVersion string, args []string) {
 	channel := "release"
 	targetVersion := ""
 	autoConfirm := false
+	withCore := false
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "-y" || arg == "--yes" {
 			autoConfirm = true
+		} else if arg == "--with-core" {
+			withCore = true
 		} else if arg == "--channel" && i+1 < len(args) {
 			channel = args[i+1]
 			i++
@@ -179,6 +183,13 @@ func RunUpdateCLI(currentVersion string, args []string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	if withCore {
+		coreArgs := []string{"update"}
+		if autoConfirm {
+			coreArgs = append(coreArgs, "--yes")
+		}
+		RunCoreCLI(coreArgs)
+	}
 }
 
 func RunCoreCLI(args []string) {
@@ -191,7 +202,12 @@ func RunCoreCLI(args []string) {
 	}
 
 	sub := args[0]
+	localURL := os.Getenv("CUSTOM_CORE_URL")
 	if sub == "reset" {
+		if localURL != "" {
+			fmt.Fprintln(os.Stderr, "Remove CUSTOM_CORE_URL and restart gowave-node to restore panel-managed core selection.")
+			os.Exit(1)
+		}
 		path := xray.FindCorePath(false)
 		if err := updater.ResetCore(path); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -212,18 +228,32 @@ func RunCoreCLI(args []string) {
 	repo := "XTLS/Xray-core"
 	targetVersion := ""
 	autoConfirm := false
+	explicitRelease := false
 
 	for i := 1; i < len(args); i++ {
 		arg := args[i]
 		if arg == "-y" || arg == "--yes" {
 			autoConfirm = true
 		} else if (arg == "--repo" || arg == "-r") && i+1 < len(args) {
+			explicitRelease = true
 			repo = args[i+1]
 			i++
 		} else if (arg == "--version" || arg == "-v") && i+1 < len(args) {
+			explicitRelease = true
 			targetVersion = args[i+1]
 			i++
 		}
+	}
+	if localURL != "" {
+		if explicitRelease {
+			fmt.Fprintln(os.Stderr, "CUSTOM_CORE_URL selects the core source. Update the URL to choose a different release.")
+			os.Exit(1)
+		}
+		if err := updateLocalCore(localURL, autoConfirm); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	fmt.Printf("%s[CORE]%s Checking releases for %s...\n", colorCyan, colorReset, repo)
@@ -358,4 +388,65 @@ func RunCoreCLI(args []string) {
 			os.Exit(1)
 		}
 	}
+}
+
+func updateLocalCore(source string, autoConfirm bool) error {
+	if !autoConfirm {
+		fmt.Print("Update Xray from CUSTOM_CORE_URL and restart gowave-node? [y/N]: ")
+		answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		answer = strings.ToLower(strings.TrimSpace(answer))
+		if answer != "y" && answer != "yes" {
+			fmt.Println("Aborted.")
+			return nil
+		}
+	}
+	target, err := xray.LocalCorePath()
+	if err != nil {
+		return err
+	}
+	unlock, err := updater.LockTarget(target)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	fmt.Println("Downloading Xray from CUSTOM_CORE_URL...")
+	candidate, err := updater.DownloadLocalCore(context.Background(), source, os.Getenv("CUSTOM_CORE_SHA256"))
+	if err != nil {
+		return err
+	}
+	defer os.Remove(candidate)
+	rollback := func() error { return updater.Rollback(target) }
+	if _, err := os.Stat(target); os.IsNotExist(err) {
+		rollback = func() error { return os.Remove(target) }
+	}
+	if err := updater.Backup(target, ".previous"); err != nil {
+		return err
+	}
+	if err := updater.AtomicReplace(candidate, target); err != nil {
+		updater.CommitUpdate(target)
+		return err
+	}
+	d, _ := config.ReadDiscovery()
+	if d.PID != 0 {
+		if err := completeUpdate(target, d.PID, Ready(true), rollback); err != nil {
+			return err
+		}
+	} else {
+		updater.CommitUpdate(target)
+	}
+	fmt.Printf("Custom Xray core updated at %s\n", target)
+	return nil
+}
+
+func UpdateGeodata() error {
+	dir, err := xray.GeodataDirectory()
+	if err != nil {
+		return err
+	}
+	if err := updater.RefreshGeodata(dir); err != nil {
+		return err
+	}
+	fmt.Printf("Updated geodata in %s\n", dir)
+	fmt.Println("Restart gowave-node to reload the files.")
+	return nil
 }
