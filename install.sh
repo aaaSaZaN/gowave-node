@@ -546,6 +546,28 @@ else
     log "Installed and running. Add the node in the panel with port $port to start Xray."
 fi
 complete=true
+
+# GeoCheck is optional. Install it after the node passes readiness so a
+# download failure cannot interrupt an otherwise successful deployment.
+geocheck_version=v0.3.0
+geocheck_destination=$install_dir/geocheck-$geocheck_version
+geocheck_sha256=
+case $arch in
+    amd64) geocheck_sha256=eca33bbee3c2c3ea7ade85f9a61ef4c7471a8334eb8f0a715e844aef865307d9 ;;
+    arm64) geocheck_sha256=1badce683fd901b4052a78b833d536b851cf1f5952d82bc985c875e37a153267 ;;
+esac
+if [ -n "$geocheck_sha256" ] && [ ! -x "$geocheck_destination" ]; then
+    geocheck_archive=geocheck_linux_$arch.tar.gz
+    if fetch "https://github.com/remnawave/geocheck/releases/download/$geocheck_version/$geocheck_archive" "$work/$geocheck_archive" &&
+        [ "$(sha256 "$work/$geocheck_archive")" = "$geocheck_sha256" ] &&
+        tar -xzf "$work/$geocheck_archive" -C "$work" geocheck &&
+        put 0755 "$work/geocheck" "$geocheck_destination"; then
+        log "Installed GeoCheck $geocheck_version."
+    else
+        log 'Could not install GeoCheck. The node can try to download it on demand.'
+    fi
+fi
+
 for name in gowave-node xlogs; do
     destination=$prefix/bin/$name
     # Replace stale regular files too: an old CLI copy may lack execute bits.

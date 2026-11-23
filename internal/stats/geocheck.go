@@ -18,12 +18,11 @@ import (
 	"github.com/aaaSaZaN/gowave-node/internal/updater"
 )
 
-// geocheckPath is where the upstream node image and older installers put
-// geocheck. Without it, the pinned release is fetched for each run and removed
-// afterwards; it is built for linux/amd64 and linux/arm64 only.
+// geocheckPath is the legacy location used by the upstream node image.
 const geocheckPath = "/usr/local/bin/geocheck"
 
-const geocheckReleaseURL = "https://github.com/remnawave/geocheck/releases/download/v0.3.0/"
+const geocheckVersion = "v0.3.0"
+const geocheckReleaseURL = "https://github.com/remnawave/geocheck/releases/download/" + geocheckVersion + "/"
 
 var geocheckArchiveSHA256 = map[string]string{
 	"amd64": "eca33bbee3c2c3ea7ade85f9a61ef4c7471a8334eb8f0a715e844aef865307d9",
@@ -108,10 +107,16 @@ func (g *GeocheckService) Run(parent context.Context, req GeocheckRequest) (map[
 	return report, nil
 }
 
-// geocheckBinary returns the installed geocheck, or downloads the pinned
-// release into a temporary directory that cleanup removes.
+// geocheckBinary prefers the version installed next to the node. Legacy and
+// manual installs can use the system binary or a temporary pinned download.
 func geocheckBinary(parent context.Context) (string, func(), error) {
-	if info, err := os.Stat(geocheckPath); err == nil && info.Mode().IsRegular() {
+	if exe, err := os.Executable(); err == nil {
+		binary := filepath.Join(filepath.Dir(exe), "geocheck-"+geocheckVersion)
+		if executableFile(binary) {
+			return binary, func() {}, nil
+		}
+	}
+	if executableFile(geocheckPath) {
 		return geocheckPath, func() {}, nil
 	}
 	sum, ok := geocheckArchiveSHA256[runtime.GOARCH]
@@ -133,6 +138,11 @@ func geocheckBinary(parent context.Context) (string, func(), error) {
 		return "", nil, fmt.Errorf("Geocheck: download failed: %w", err)
 	}
 	return binary, cleanup, nil
+}
+
+func executableFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0111 != 0
 }
 
 // geocheckTempDir prefers the node's own directory because /tmp may be
